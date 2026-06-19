@@ -320,7 +320,7 @@ function Build-Report {
     W "1. **Probe origin candidates** with httpx + screenshot - any that serve the app bypass the CDN/WAF."
     W ("2. **Confirm the {0} exposed ports** are open, version the services, match CVEs above." -f $ports.Count)
     W "3. **Replay prod URIs on UAT** - ``Invoke-AssetLens.ps1 -MapUat -UatBase https://<uat-host>`` -> uat_targets.txt, then ``httpx -l uat_targets.txt`` / nuclei. UAT is never crawled, so these harvested paths ARE your endpoint list."
-    W "4. **Hit the high-signal endpoints** (section 4) - seed ffuf/katana with uris.txt + params, don't blind-fuzz."
+    W "4. **Hit the high-signal endpoints** (section 4) - load uris.txt + params into Burp Intruder (payload positions); katana to crawl from there. Don't blind-fuzz."
     W "5. **Validate every secret** in section 5 (live? still valid?)."
     W "6. **Review in-scope cert SANs** for alternate names of the same app."
     W ""
@@ -511,7 +511,7 @@ function Invoke-MapUat {
     Write-Host ""
     Write-Host "Run these against the UAT host inside the VDI:" -ForegroundColor Cyan
     Write-Host ("  httpx  -l `"{0}`" -sc -title -mc 200,204,301,302,401,403,500" -f $outFile)
-    Write-Host ("  ffuf   -w `"{0}`" -u FUZZ" -f $src)
+    Write-Host ("  Burp Intruder: send {0}/ to Intruder, set the path as the payload position, load `"{1}`" as the payload list (Sniper)" -f $UatBase, $src)
     Write-Host ("  nuclei -l `"{0}`" -t <templates>" -f $outFile)
 }
 
@@ -1307,7 +1307,7 @@ Active steps only. Run from the authorized VDI. Read Report.md first.
 2. Confirm the exposed ports are open from the VDI: $ports
    - cross-check 08_tech\internetdb_vulns.txt + 06_js\retirejs.json against the live versions.
 3. Replay prod URIs on UAT: Invoke-AssetLens.ps1 -MapUat -Package . -UatBase https://<uat> -> uat_targets.txt, then httpx/nuclei.
-4. Seed ffuf / katana from 05_history\uris.txt + 06_js\wordlist.txt + params.txt; scan 05_history\urls_by_ext.txt for sensitive file types.
+4. Load 05_history\uris.txt + 06_js\wordlist.txt + params.txt into Burp Intruder (payload sets); katana to crawl. Scan 05_history\urls_by_ext.txt for sensitive file types.
 5. Validate secrets in 06_js (trufflehog.json / gitleaks.json).
 6. Review 02_certs\sans.txt for in-scope alternate names of the same app.
 
