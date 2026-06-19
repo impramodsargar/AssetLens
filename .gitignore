@@ -1,0 +1,10 @@
+# Real keys — never commit
+config/keys.ps1
+
+# Engagement output / client data — never commit
+output/
+*.zip
+
+# Noise
+*.log
+__pycache__/

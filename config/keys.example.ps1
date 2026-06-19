@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# AssetLens : API key + tool-path configuration  (TEMPLATE)
+#
+# Each tester copies this file to  config\keys.ps1  and fills in their OWN keys.
+# config\keys.ps1 is git-ignored and must NEVER be committed.
+#
+# ALL keys below are FREE-tier. The toolkit also has a keyless HTTP core
+# (RDAP, crt.sh, Shodan-InternetDB, Wayback, Tranco, urlscan search,
+# LeakCheck breach data) that runs with ZERO keys.
+# Keys only widen coverage. Anything left blank is skipped.
+# ---------------------------------------------------------------------------
+
+$Keys = @{
+    # --- FREE keys (sign up, free tier) ---
+    VirusTotal     = ''   # FREE  virustotal.com            4 req/min, 500/day - passive DNS + reputation
+    Censys         = ''   # FREE  platform.censys.io        Platform PAT (single token, used as Bearer)
+    Netlas         = ''   # FREE  netlas.io                 free daily quota
+    SecurityTrails = ''   # FREE  securitytrails.com        50 queries / month
+    UrlScan        = ''   # FREE  urlscan.io                search works keyless; key raises limits
+    GitHub         = ''   # FREE  github.com/settings/tokens   read-only PAT (public_repo / read:packages)
+    LeakIX         = ''   # FREE  leakix.net/settings/api
+    Hunter         = ''   # FREE  hunter.io                 25 searches / month  (email finder)
+
+    # --- origin-pivot engines, queried DIRECTLY in P4 (free-tier reality from live testing) ---
+    CriminalIP     = ''   # FREE  criminalip.io    API key   - WORKS free (primary origin engine)
+    Fofa           = ''   # FREE* fofa.info        key       - needs query credits (F-points) to return
+    Quake          = ''   # FREE  quake.360.net    token
+    # ZoomEye + HunterHow intentionally omitted: both are paid/credit-gated on the "free" tier (no usable origin pivot), so the toolkit does not query them.
+
+    # --- Left blank on purpose (NOT free) - toolkit skips them ---
+    Shodan         = ''   # host lookup needs PAID membership; free InternetDB is used keyless instead
+    IntelX         = ''   # free-tier API is very limited; mostly paid. Optional.
+}
+
+# Breach / infostealer checks are KEYLESS: LeakCheck public. No key needed.
+
+# Optional paths to tools that are not a single .exe on PATH.
+$Tools = @{
+    SpiderFootDir  = ''   # e.g. C:\Users\you\tools\spiderfoot  (folder containing sf.py)
+    Python         = 'python'   # python launcher on PATH
+}
