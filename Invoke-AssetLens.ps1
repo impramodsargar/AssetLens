@@ -154,6 +154,8 @@ function Build-Report {
     $nvd     = 'https://nvd.nist.gov/vuln/detail/'
     $geo     = GJson '01_scope\geo.json'
     $m365    = GJson '01_scope\m365.json'
+    $abuse   = GJson '03_scan\abuseipdb.json'
+    $otx     = GJson '07_osint\otx_host.json'
     $worldPath = ''; $wpf = Join-Path $PSScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw).Trim() }
     $flagSvg = ''; $fff = Join-Path $Package '01_scope\flag.svg'; if (Test-Path $fff) { $flagSvg = (Get-Content $fff -Raw).Trim() }
 
@@ -345,6 +347,8 @@ function Build-Report {
     W ("- Org emails: **{0}**" -f @($emails).Count) ; if (@($emails).Count) { W ("  - " + ((@($emails) | Select-Object -First 15) -join ', ')) }
     if (@($breach).Count) { W ("- Breach/infostealer hits: **{0}** (07_osint\breach_hits.txt)" -f @($breach).Count) }
     if ($tranco.ranks) { W ("- Tranco rank: **{0}**" -f $tranco.ranks[0].rank) }
+    if ($otx) { W ("- OTX threat pulses: **{0}**{1}" -f [int]$otx.pulse_info.count, $(if ([int]$otx.pulse_info.count -gt 0) { ' - host referenced in threat reports (07_osint\otx_host.json)' } else { '' })) }
+    if ($abuse) { W ("- AbuseIPDB (host IP): **score {0}/100**, {1} report(s), usage ``{2}``{3}" -f $abuse.abuseConfidenceScore, $abuse.totalReports, $abuse.usageType, $(if ($abuse.isTor) { ', TOR exit' } else { '' })) }
     W ""
     W "## 7. Out of scope (observed - DO NOT TEST)"
     $oosClean = @($oos)
@@ -523,6 +527,8 @@ function Build-Report {
     if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($breach).Count) }
     if ($tranco.ranks) { HW ('<div class="muted">Tranco rank: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f $tranco.ranks[0].rank) }
     if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($ghHits).Count) }
+    if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <span style="font-weight:500;color:{0}">{1}</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--text)' }), $opc) }
+    if ($abuse) { HW ('<div class="muted">AbuseIPDB: <span style="font-weight:500;color:{0}">{1}/100</span> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--text)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType))) }
     HW '</div></div>'
     HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test &middot; all active verification deferred to the authorised VDI</div>' -f $oosClean.Count)
     HW '</div></body></html>'
@@ -656,6 +662,8 @@ function Invoke-Validate {
     if ($Keys.GitHub) { $r = Hit 'https://api.github.com/rate_limit' @{ Authorization = "Bearer $($Keys.GitHub)"; 'User-Agent' = 'AssetLens' }; Show 'GitHub' $true $r ("core left $($r.obj.resources.core.remaining)") } else { Vline 'GitHub' 'not set' 'DarkGray' }
     Show 'LeakIX'         $Keys.LeakIX         (Hit 'https://leakix.net/host/8.8.8.8' @{ 'api-key' = $Keys.LeakIX; Accept = 'application/json' })
     Show 'UrlScan'        $Keys.UrlScan        (Hit 'https://urlscan.io/api/v1/search/?q=domain:example.com' @{ 'API-Key' = $Keys.UrlScan })
+    Show 'OTX'            $Keys.OTX            (Hit 'https://otx.alienvault.com/api/v1/indicators/hostname/example.com/general' @{ 'X-OTX-API-KEY' = $Keys.OTX })
+    if ($Keys.AbuseIPDB) { $r = Hit 'https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=90' @{ Key = $Keys.AbuseIPDB; Accept = 'application/json' }; if ($r.ok -and $r.obj.data) { Vline 'AbuseIPDB' 'VALID' 'Green' } else { Vline 'AbuseIPDB' ("FAIL ({0})" -f $r.code) 'Red' } } else { Vline 'AbuseIPDB' 'not set' 'DarkGray' }
     Show 'Quake'          $Keys.Quake          (Hit 'https://quake.360.net/api/v3/user/info' @{ 'X-QuakeToken' = $Keys.Quake })
     Write-Host ''
     Write-Host 'Run before an engagement to catch dead keys / missing tools. Probes hit the API providers + benign IPs only - never a target.' -ForegroundColor Cyan
@@ -913,6 +921,14 @@ function Phase3-Scan {
         $nl = Invoke-Json "https://app.netlas.io/api/host/$IP/" @{ 'X-API-Key' = $Keys.Netlas }
         if ($nl) { Save-Json (Join-Path $pkg '03_scan\netlas_host.json') $nl; Write-Log 'Netlas host ok' 'OK' }
     }
+    if (Have-Key 'AbuseIPDB') {
+        # IP reputation (abuse score / reports / usage type / TOR) for the host's IP - free 1000 checks/day
+        $ab = Invoke-Json "https://api.abuseipdb.com/api/v2/check?ipAddress=$IP&maxAgeInDays=90" @{ Key = $Keys.AbuseIPDB; Accept = 'application/json' }
+        if ($ab -and $ab.data) {
+            Save-Json (Join-Path $pkg '03_scan\abuseipdb.json') $ab.data
+            Write-Log ('AbuseIPDB: score {0}/100, {1} report(s), usage="{2}"{3}' -f $ab.data.abuseConfidenceScore, $ab.data.totalReports, $ab.data.usageType, $(if ($ab.data.isTor) { ', TOR exit' } else { '' })) $(if ([int]$ab.data.abuseConfidenceScore -ge 25) { 'WARN' } else { 'OK' })
+        }
+    }
 }
 
 function Phase4-Origin {
@@ -984,6 +1000,17 @@ function Phase5-History {
     $urls = New-Object System.Collections.Generic.HashSet[string]
     # (raw Wayback CDX dropped - flaky timeouts; gau + waybackurls cover the same archives reliably)
     foreach ($t in 'gau', 'waybackurls') { $o = Invoke-Tool $t @($Target); if ($o) { foreach ($u in $o) { if ($u) { [void]$urls.Add([string]$u) } } } }
+    # CommonCrawl CDX - more archived URLs for the host (keyless HTTP; latest crawl index)
+    try {
+        $ccol = Invoke-Json 'https://index.commoncrawl.org/collinfo.json'
+        $ccApi = if ($ccol) { [string]$ccol[0].'cdx-api' } else { '' }
+        if ($ccApi) {
+            $ccN = 0
+            $ccResp = Invoke-WebRequest ('{0}?url={1}/*&output=json&fl=url&limit=1000' -f $ccApi, $Target) -UseBasicParsing -TimeoutSec 60
+            foreach ($ln in ($ccResp.Content -split "`n")) { if ($ln.Trim()) { try { $j = $ln | ConvertFrom-Json; if ($j.url) { [void]$urls.Add([string]$j.url); $ccN++ } } catch {} } }
+            Write-Log ('CommonCrawl: {0} URLs ({1})' -f $ccN, $ccol[0].id) 'OK'
+        }
+    } catch { Write-Log 'CommonCrawl unreachable -> skip' 'SKIP' }
     $h = @{}; if (Have-Key 'UrlScan') { $h['API-Key'] = $Keys.UrlScan }
     $us = Invoke-Json "https://urlscan.io/api/v1/search/?q=domain:$Target" $h
     if ($us) { Save-Json (Join-Path $pkg '05_history\urlscan.json') $us; foreach ($r in $us.results) { if ($r.page.url) { [void]$urls.Add([string]$r.page.url) } } }
@@ -1198,6 +1225,32 @@ function Phase7-Osint {
             Save-Lines (Join-Path $pkg '07_osint\github_hits.txt') @($r.items | ForEach-Object { '{0}  {1}  {2}' -f $_.repository.full_name, $_.path, $_.html_url })
             Write-Log ('GitHub code hits: {0}' -f $r.total_count) 'OK'
         }
+        # commit-author emails matching the apex -> free org-email source (zero-FP: filtered to @apex; feeds the breach check)
+        $apex = Get-Apex $Target
+        $gc = Invoke-Json ('https://api.github.com/search/commits?q={0}&per_page=100' -f $apex) $gh
+        if ($gc -and $gc.items) {
+            $rxA = '(?i)@' + [regex]::Escape($apex) + '$'
+            foreach ($it in $gc.items) { foreach ($em in @($it.commit.author.email, $it.commit.committer.email)) { if ($em -and $em -match $rxA) { [void]$emails.Add(([string]$em).ToLower()) } } }
+            if ($emails.Count) { Write-Log ('GitHub commit emails (@{0}): {1}' -f $apex, @($emails).Count) 'OK' }
+        }
+    }
+
+    # AlienVault OTX - threat-intel pulses (host) + passive DNS (IP -> siblings to OOS); free key
+    if (Have-Key 'OTX') {
+        $oh = @{ 'X-OTX-API-KEY' = $Keys.OTX }
+        $og = Invoke-Json ('https://otx.alienvault.com/api/v1/indicators/hostname/{0}/general' -f $Target) $oh
+        if ($og) {
+            Save-Json (Join-Path $pkg '07_osint\otx_host.json') $og
+            $pc = [int]$og.pulse_info.count
+            Write-Log ('OTX: {0} threat pulse(s) referencing the host' -f $pc) $(if ($pc -gt 0) { 'WARN' } else { 'OK' })
+        }
+        if ($IP) {
+            $opd = Invoke-Json ('https://otx.alienvault.com/api/v1/indicators/IPv4/{0}/passive_dns' -f $IP) $oh
+            if ($opd -and $opd.passive_dns) {
+                Save-Json (Join-Path $pkg '07_osint\otx_passivedns.json') $opd.passive_dns
+                foreach ($pd in $opd.passive_dns) { if ($pd.hostname) { Add-OOS $pd.hostname 'OTX passive-DNS' } }
+            }
+        }
     }
 
     # LeakIX - exposures / leaks on the host IP
@@ -1215,7 +1268,7 @@ function Phase7-Osint {
     } else { Write-Log 'SpiderFoot not configured ($Tools.SpiderFootDir) -> skip' 'SKIP' }
 
     # consolidated email list -> feeds the LeakCheck breach check below
-    # (no email harvester wired since Hunter was removed - $emails stays empty unless a free email source is added)
+    # (emails now come from GitHub commit-authors @apex above - the free replacement for Hunter)
     if ($emails.Count) { Save-Lines (Join-Path $pkg '07_osint\emails.txt') (@($emails) | Sort-Object) }
 
     # Breach / infostealer exposure - FREE + KEYLESS (replaces paid HIBP)
@@ -1270,11 +1323,11 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 - Report.md   synthesized human-readable brief (read first)
 - 01_scope    RDAP (apex) + DNS records (MX/TXT/NS) + IP(s) + geo + M365/Azure tenant + CDN flag
 - 02_certs    CT-log SANs (in-scope flagged)
-- 03_scan     Shodan-InternetDB + Shodan/Censys/Netlas host (ports / services / CVEs)
+- 03_scan     Shodan-InternetDB + Shodan/Censys/Netlas host (ports / services / CVEs) + AbuseIPDB IP-reputation
 - 04_origin   origin-behind-CDN candidates (verify in VDI)
 - 05_history  archived URLs, uro-deduped, URIs (UAT replay), params, extensions
 - 06_js       archived responses + native-regex endpoints/params/wordlist + trufflehog/gitleaks/retire.js
-- 07_osint    Tranco, GitHub, LeakIX, emails, breach exposure
+- 07_osint    Tranco, GitHub (code + commit-emails), OTX threat-intel, LeakIX, emails, breach exposure
 - 08_tech     CPEs + InternetDB CVEs
 - Verify_inside_vdi.md   ranked active-test worklist
 - OOS_observed.txt   off-host assets (DO NOT TEST)

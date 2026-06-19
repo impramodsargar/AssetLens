@@ -19,6 +19,8 @@ $Keys = @{
     UrlScan        = ''   # FREE  urlscan.io                search works keyless; key raises limits
     GitHub         = ''   # FREE  github.com/settings/tokens   read-only PAT (public_repo / read:packages)
     LeakIX         = ''   # FREE  leakix.net/settings/api
+    OTX            = ''   # FREE  otx.alienvault.com   threat-intel pulses + passive DNS (free signup)
+    AbuseIPDB      = ''   # FREE  abuseipdb.com        IP reputation, 1000 checks/day (free signup)
 
     # --- origin-pivot engines, queried DIRECTLY in P4 (free-tier reality from live testing) ---
     CriminalIP     = ''   # FREE  criminalip.io    API key   - WORKS free (primary origin engine)
