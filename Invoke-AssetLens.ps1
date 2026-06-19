@@ -1059,7 +1059,9 @@ function Phase6-Js {
     New-Item -ItemType Directory -Force -Path $respDir | Out-Null
     # waymore mode R: robustly download archived response bodies (incl JS) from the archives - replaces the flaky per-JS fetch
     Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'R', '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
-    $cnt = @(Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue).Count
+    # only real downloaded bodies are responses - exclude waymore's own bookkeeping (waymore_index.txt + *.tmp)
+    $bodyFiles = @(Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'waymore_index.txt' -and $_.Name -notlike '*.tmp' })
+    $cnt = $bodyFiles.Count
     if ($cnt -eq 0) { Write-Log 'waymore downloaded 0 responses -> skip extraction' 'WARN'; return }
     Write-Log "waymore downloaded $cnt archived responses" 'OK'
     # native endpoint/param/wordlist extraction from the bodies (replaced xnLinkFinder, which in v8.2 forces a
@@ -1091,7 +1093,7 @@ function Phase6-Js {
     $smRef = New-Object System.Collections.Generic.HashSet[string]
     # archived OpenAPI/Swagger specs: a body that IS a spec -> the full endpoint contract
     $apiEp = New-Object System.Collections.Generic.List[string]; $apiSpecN = 0
-    foreach ($f in (Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue)) {
+    foreach ($f in $bodyFiles) {
         $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $c) { continue }
         if ($corpus.Length -lt 3000000) { $seg = $(if ($c.Length -gt 80000) { $c.Substring(0, 80000) } else { $c }); [void]$corpus.Append($seg).Append("`n") }
@@ -1148,7 +1150,7 @@ function Phase6-Js {
     # Wappalyzer-style passive fingerprint: match the bundled MIT ruleset (config\wappalyzer.json) against the body
     # corpus. Zero new requests - reads only the bodies waymore already pulled. Broadens beyond the curated $techSig.
     $wappaFile = Join-Path $PSScriptRoot 'config\wappalyzer.json'
-    if ((Test-Path $wappaFile) -and $corpus.Length) {
+    if ((Test-Path $wappaFile) -and $corpus.Length -gt 200) {
         $corpusStr = $corpus.ToString()
         $wappa = $null; try { $wappa = Get-Content $wappaFile -Raw | ConvertFrom-Json } catch { Write-Log "wappalyzer.json parse failed: $($_.Exception.Message)" 'WARN' }
         if ($wappa) {
