@@ -19,17 +19,14 @@ $Keys = @{
     UrlScan        = ''   # FREE  urlscan.io                search works keyless; key raises limits
     GitHub         = ''   # FREE  github.com/settings/tokens   read-only PAT (public_repo / read:packages)
     LeakIX         = ''   # FREE  leakix.net/settings/api
-    Hunter         = ''   # FREE  hunter.io                 25 searches / month  (email finder)
 
     # --- origin-pivot engines, queried DIRECTLY in P4 (free-tier reality from live testing) ---
     CriminalIP     = ''   # FREE  criminalip.io    API key   - WORKS free (primary origin engine)
-    Fofa           = ''   # FREE* fofa.info        key       - needs query credits (F-points) to return
     Quake          = ''   # FREE  quake.360.net    token
-    # ZoomEye + HunterHow intentionally omitted: both are paid/credit-gated on the "free" tier (no usable origin pivot), so the toolkit does not query them.
+    # Omitted (not usefully free, so not wired): ZoomEye/HunterHow (paid/credit-gated), Fofa (paid query credits), Hunter (limited), IntelX (mostly paid).
 
-    # --- Left blank on purpose (NOT free) - toolkit skips them ---
+    # --- PAID membership, optional (keyless Shodan-InternetDB is the free fallback) ---
     Shodan         = ''   # host lookup needs PAID membership; free InternetDB is used keyless instead
-    IntelX         = ''   # free-tier API is very limited; mostly paid. Optional.
 }
 
 # Breach / infostealer checks are KEYLESS: LeakCheck public. No key needed.

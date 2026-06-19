@@ -656,9 +656,6 @@ function Invoke-Validate {
     if ($Keys.GitHub) { $r = Hit 'https://api.github.com/rate_limit' @{ Authorization = "Bearer $($Keys.GitHub)"; 'User-Agent' = 'AssetLens' }; Show 'GitHub' $true $r ("core left $($r.obj.resources.core.remaining)") } else { Vline 'GitHub' 'not set' 'DarkGray' }
     Show 'LeakIX'         $Keys.LeakIX         (Hit 'https://leakix.net/host/8.8.8.8' @{ 'api-key' = $Keys.LeakIX; Accept = 'application/json' })
     Show 'UrlScan'        $Keys.UrlScan        (Hit 'https://urlscan.io/api/v1/search/?q=domain:example.com' @{ 'API-Key' = $Keys.UrlScan })
-    Show 'Hunter'         $Keys.Hunter         (Hit ('https://api.hunter.io/v2/account?api_key={0}' -f $Keys.Hunter))
-    Show 'IntelX'         $Keys.IntelX         (Hit 'https://2.intelx.io/authenticate/info' @{ 'x-key' = $Keys.IntelX })
-    if ($Keys.Fofa) { $r = Hit ('https://fofa.info/api/v1/info/my?key={0}' -f $Keys.Fofa); if ($r.ok -and -not $r.obj.error) { Vline 'Fofa' 'VALID' 'Green' } elseif ($r.ok) { Vline 'Fofa' ('FAIL (' + $r.obj.errmsg + ')') 'Red' } else { Vline 'Fofa' ("FAIL ({0})" -f $r.code) 'Red' } } else { Vline 'Fofa' 'not set' 'DarkGray' }
     Show 'Quake'          $Keys.Quake          (Hit 'https://quake.360.net/api/v3/user/info' @{ 'X-QuakeToken' = $Keys.Quake })
     Write-Host ''
     Write-Host 'Run before an engagement to catch dead keys / missing tools. Probes hit the API providers + benign IPs only - never a target.' -ForegroundColor Cyan
@@ -945,15 +942,6 @@ function Phase4-Origin {
             Write-Log ('CriminalIP cert hits: {0}' -f @($ci.data.result).Count) 'OK'
         }
     }
-    if (Have-Key 'Fofa') {
-        $fq = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('cert="' + $Target + '"'))
-        $fo = Invoke-Json ('https://fofa.info/api/v1/search/all?key={0}&qbase64={1}&size=100&fields=ip' -f $Keys.Fofa, [uri]::EscapeDataString($fq))
-        if ($fo -and -not $fo.error) {
-            Save-Json (Join-Path $pkg '04_origin\fofa.json') $fo
-            foreach ($row in $fo.results) { $fip = if ($row -is [array]) { $row[0] } else { $row }; if ($fip) { [void]$cand.Add([string]$fip) } }
-            Write-Log ('Fofa cert hits: {0}' -f @($fo.results).Count) 'OK'
-        } elseif ($fo.error) { Write-Log ('Fofa: ' + $fo.errmsg) 'WARN' }
-    }
     if (Have-Key 'Quake') {
         $qb = @{ query = ('cert:"' + $Target + '"'); size = 50; ignore_cache = $true } | ConvertTo-Json
         try {
@@ -1212,35 +1200,10 @@ function Phase7-Osint {
         }
     }
 
-    # Intelligence X - leaks / pastes / darkweb (2-step async search)
-    if (Have-Key 'IntelX') {
-        try {
-            $ixh   = @{ 'x-key' = $Keys.IntelX }
-            $body  = @{ term = $Target; maxresults = 50; media = 0; sort = 2; terminate = @() } | ConvertTo-Json
-            $start = Invoke-RestMethod -Method Post -Uri 'https://2.intelx.io/intelligent/search' -Headers $ixh -Body $body -ContentType 'application/json' -TimeoutSec 30 -ErrorAction Stop
-            if ($start.id) {
-                Start-Sleep -Seconds 2
-                $res = Invoke-Json ('https://2.intelx.io/intelligent/search/result?id={0}&limit=50' -f $start.id) $ixh
-                if ($res) { Save-Json (Join-Path $pkg '07_osint\intelx.json') $res; Write-Log ('IntelX records: {0}' -f @($res.records).Count) 'OK' }
-            }
-        } catch { Write-Log "IntelX error: $($_.Exception.Message)" 'WARN' }
-    }
-
     # LeakIX - exposures / leaks on the host IP
     if ((Have-Key 'LeakIX') -and $IP) {
         $lx = Invoke-Json "https://leakix.net/host/$IP" @{ 'api-key' = $Keys.LeakIX; Accept = 'application/json' }
         if ($lx) { Save-Json (Join-Path $pkg '07_osint\leakix_host.json') $lx; Write-Log 'LeakIX host ok' 'OK' }
-    }
-
-    # Hunter.io - org emails for the apex (feeds in-VDI auth testing)
-    $apex = Get-Apex $Target
-    if (Have-Key 'Hunter') {
-        $hr = Invoke-Json ('https://api.hunter.io/v2/domain-search?domain={0}&limit=100&api_key={1}' -f $apex, $Keys.Hunter)
-        if ($hr) {
-            Save-Json (Join-Path $pkg '07_osint\hunter.json') $hr
-            foreach ($e in $hr.data.emails) { if ($e.value) { [void]$emails.Add(([string]$e.value).ToLower()) } }
-            Write-Log ('Hunter emails: {0}' -f @($hr.data.emails).Count) 'OK'
-        }
     }
 
     # SpiderFoot passive (optional, slow)
@@ -1251,7 +1214,8 @@ function Phase7-Osint {
         catch { Write-Log "SpiderFoot error: $($_.Exception.Message)" 'WARN' } finally { Pop-Location }
     } else { Write-Log 'SpiderFoot not configured ($Tools.SpiderFootDir) -> skip' 'SKIP' }
 
-    # consolidated email list (from Hunter) - feeds the breach check below
+    # consolidated email list -> feeds the LeakCheck breach check below
+    # (no email harvester wired since Hunter was removed - $emails stays empty unless a free email source is added)
     if ($emails.Count) { Save-Lines (Join-Path $pkg '07_osint\emails.txt') (@($emails) | Sort-Object) }
 
     # Breach / infostealer exposure - FREE + KEYLESS (replaces paid HIBP)

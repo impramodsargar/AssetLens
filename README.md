@@ -62,10 +62,10 @@ Set the passive boundary with the client and pick the mode to match. The chosen 
 | **P1** scope | RDAP (apex) + **DNS records (MX/TXT-SPF/DMARC/NS/CNAME)** + IP(s) + **geo-location & country flag** (ipwho.is / flagcdn) + **Microsoft 365 / Azure AD tenant mapping** (tenant ID, Managed/Federated, ADFS URL, tenant domains — queries Microsoft, not the target), netblock owner, CDN/WAF flag | keyless |
 | **P2** certs | crt.sh SANs (in-scope flagged); `subfinder` | keyless |
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host | InternetDB keyless |
-| **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Fofa/Quake) direct cert→IP pivot; Netlas domain | keyed |
+| **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert→IP pivot; Netlas domain | keyed |
 | **P5** history | `gau` + `waybackurls` + urlscan → urls, params, js; **`uro`** collapses near-duplicate URL patterns | keyless core |
 | **P6** js | **`waymore`** downloads archived responses → **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint (built-in signatures + bundled Wappalyzer ruleset, matched passively against the bodies)**/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
-| **P7** osint | Tranco; GitHub code search; IntelX; LeakIX; Hunter emails → **LeakCheck** breach-check (free/keyless); SpiderFoot passive | mixed |
+| **P7** osint | Tranco; GitHub code search; LeakIX; **LeakCheck** breach-check (free/keyless, per discovered email); SpiderFoot passive | mixed |
 
 Missing tool or missing key → that step logs `SKIP` and the run continues. Coverage scales with what you've installed/configured.
 
