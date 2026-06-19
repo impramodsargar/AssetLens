@@ -1041,19 +1041,10 @@ function Phase6-Js {
     $jsDir = Join-Path $pkg '06_js'
     $respDir = Join-Path $jsDir 'responses'
     New-Item -ItemType Directory -Force -Path $respDir | Out-Null
-    # waymore mode R: download archived response bodies (incl JS). Feed it our VT + UrlScan keys via a per-run config
-    # (-c) so it ALSO harvests URLs from VirusTotal + authenticated URLScan, not just the keyless sources. The config
-    # holds keys, so it is written to TEMP (never the package -> never the zip) and deleted right after the run.
-    $wmArgs = @('-i', $Target, '-mode', 'R', '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4')
-    $wmCfg = $null
-    if ((Have-Key 'VirusTotal') -or (Have-Key 'UrlScan')) {
-        $wmCfg = Join-Path ([IO.Path]::GetTempPath()) ('assetlens_wm_{0}.yml' -f [IO.Path]::GetRandomFileName())
-        Save-Text $wmCfg ("URLSCAN_API_KEY: `"{0}`"`nVIRUSTOTAL_API_KEY: `"{1}`"`n" -f [string]$Keys.UrlScan, [string]$Keys.VirusTotal)
-        $wmArgs += @('-c', $wmCfg)
-        Write-Log 'waymore: wired VT + UrlScan keys via temp -c config (extra URL sources)' 'OK'
-    }
-    Invoke-Tool 'waymore' $wmArgs -TimeoutSec 600 | Out-Null
-    if ($wmCfg) { Remove-Item -LiteralPath $wmCfg -Force -ErrorAction SilentlyContinue }
+    # waymore mode R: download archived response bodies (incl JS) from the keyless archives (Wayback + CommonCrawl + OTX).
+    # NOTE: do NOT feed VT/URLScan keys via -c. waymore's VirusTotal path uses the dead v2 API (current keys 403),
+    # it queries OTX keyless anyway, and URLScan we already pull directly in P5 - so -c only adds 403 noise, no new URLs.
+    Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'R', '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
     # only real downloaded bodies are responses - exclude waymore's own bookkeeping (waymore_index.txt + *.tmp)
     $bodyFiles = @(Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'waymore_index.txt' -and $_.Name -notlike '*.tmp' })
     $cnt = $bodyFiles.Count
