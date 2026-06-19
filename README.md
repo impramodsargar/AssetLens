@@ -25,21 +25,21 @@
 
 ---
 
-**AssetLens** is a PowerShell-native passive reconnaissance collector for a **single internet-facing host**. It runs **outside the VDI** on a stock Windows box and produces a self-contained, VDI-importable package (plain text / JSON, readable with nothing but a text editor) plus a ranked active-test worklist - everything an engagement needs to start, gathered without sending a single packet to the target.
+**AssetLens** is a PowerShell-native passive reconnaissance collector for a **single internet-facing host**. It gathers everything from third-party sources - without sending a single packet to the target - and produces a self-contained report (plain text / JSON, readable with nothing but a text editor) plus a ranked worklist of suggested next checks.
 
-> **The rule:** PASSIVE = zero packets to the target host. Every artifact comes from third parties that already scanned it (certificate transparency, internet-scan DBs, web archives, RDAP, OSINT APIs). All active testing is deferred to the authorized VDI.
+> **The rule:** PASSIVE = zero packets to the target host. Every artifact comes from third parties that already scanned it: certificate transparency, internet-scan DBs, web archives, RDAP, OSINT APIs.
 
 ## Features
 
 - **Zero-touch passive** - all data from third-party sources; the target never sees you
-- **Single-host discipline** - every off-host asset is auto-tagged `OUT OF SCOPE, DO NOT TEST`, never the active worklist
+- **Single-host discipline** - every off-host asset is auto-tagged `OUT OF SCOPE, DO NOT TEST` and kept out of the active worklist
 - **Seven phases** - scope/ownership, certs, internet-scan, origin-behind-CDN, history, JS mining, OSINT
 - **Keyed or keyless** - a keyless HTTP core runs with zero config; free keys only widen coverage
 - **Microsoft 365 / Azure AD** tenant mapping - tenant ID, Managed vs Federated, ADFS/IdP URL, tenant domains
 - **Passive tech fingerprinting** - a bundled Wappalyzer ruleset matched against archived bodies (no live request)
 - **OSINT** - AlienVault OTX threat-intel, AbuseIPDB reputation, GitHub code + commit-emails, LeakIX, breach-check
-- **Self-contained report** - `Report.md` plus a `Report.html` dashboard with no CDN deps, so it opens offline inside the VDI
-- **VDI bridge** - auto-zipped, SHA-256'd package and a ranked `Verify_inside_vdi.md` worklist to drive active testing
+- **Self-contained report** - `Report.md` plus a `Report.html` dashboard with no CDN deps, so it opens anywhere offline
+- **Packaged output** - auto-zipped and SHA-256'd, with a ranked `Verify.md` worklist of suggested next checks
 - **PowerShell-native** - no WSL, no Git Bash; the keyless core works before you install anything
 
 ## Installation
@@ -70,8 +70,8 @@ notepad .\config\keys.ps1
 |---|---|
 | `.\Invoke-AssetLens.ps1 <host>` | **RECON** -> package + `Report.md` + auto-zip |
 | `.\Invoke-AssetLens.ps1 -Setup [-SkipBase]` | install the toolchain |
-| `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` - pure local, runs **inside the VDI** |
-| `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map prod URIs -> `uat_targets.txt` - pure local |
+| `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` - pure local, no network |
+| `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map URIs -> `uat_targets.txt` - pure local |
 | `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw bodies excluded by default |
 | `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new ports/CVEs/SANs/endpoints) |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
@@ -88,21 +88,21 @@ notepad .\config\keys.ps1
 # strictest passivity - no DNS resolution at all (IP only from passive-DNS APIs)
 .\Invoke-AssetLens.ps1 app.target.com -Strict
 
-# recon, then map the harvested URIs onto a UAT host for replay
+# recon, then map the harvested URIs onto another host for replay
 .\Invoke-AssetLens.ps1 app.target.com -UatBase https://uat.target.com
 ```
 
-Output lands in `output\app.target.com_<date>\`, auto-zipped with a `.zip.sha256` ready to carry into the VDI.
+Output lands in `output\app.target.com_<date>\`, auto-zipped with a `.zip.sha256` ready to transfer.
 
 ## Modes
 
 | Flag | Effect |
 |---|---|
 | *(default)* | Pragmatic - one DNS resolution of the target is permitted to get its IP |
-| `-Strict` | No DNS resolution at all; IP comes only from passive-DNS APIs. Pick this if the RoE forbids *any* target contact. |
+| `-Strict` | No DNS resolution at all; IP comes only from passive-DNS APIs. Pick this if the rules forbid *any* target contact. |
 | `-HttpOnly` | Skip every external CLI tool; run only the HTTP core (keyless + keyed APIs) |
 | `-Keyless` | Ignore `config\keys.ps1`; run only the no-key sources. Default (no flag) uses your keys for the widest coverage. |
-| `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** - single-host scope. Only for wildcard / multi-host engagements. |
+| `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** - single-host scope. Only for wildcard / multi-host targets. |
 
 The chosen mode is recorded in `Index.md`.
 
@@ -124,17 +124,17 @@ The chosen mode is recorded in `Index.md`.
 
 ```
 output/<host>_<date>/
-  Report.md              <- synthesized brief: services / CVEs / origins / attack-surface / secrets / OSINT  (READ FIRST)
-  Report.html            <- same, self-contained dashboard: metric tiles + host-location map + detail cards
-  Index.md               <- passive-only attestation + mode + key status
-  Verify_inside_vdi.md   <- ranked active-test worklist (the bridge into the VDI)
-  OOS_observed.txt       <- every off-host asset, flagged DO NOT TEST
-  manifest.sha256        <- integrity / chain-of-custody
+  Report.md        <- synthesized brief: services / CVEs / origins / attack-surface / secrets / OSINT  (READ FIRST)
+  Report.html      <- same, self-contained dashboard: metric tiles + host-location map + detail cards
+  Index.md         <- passive-only attestation + mode + key status
+  Verify.md        <- ranked worklist of suggested next checks
+  OOS_observed.txt <- every off-host asset, flagged DO NOT TEST
+  manifest.sha256  <- integrity / chain-of-custody
   recon.log
   01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
 ```
 
-### Into the VDI
+### Packaging
 
 Each recon run **auto-creates** `output\<host>_<date>.zip` + `.zip.sha256`. Re-zip any package with:
 
@@ -142,23 +142,23 @@ Each recon run **auto-creates** `output\<host>_<date>.zip` + `.zip.sha256`. Re-z
 .\Invoke-AssetLens.ps1 -Zip -Package output\<host>_<date>
 ```
 
-Transfer the zip via the client-approved channel and **verify the `.zip.sha256`** on the other side. Everything is plain text / JSON, so it is usable inside a locked-down VDI with no tools - drive `Verify_inside_vdi.md` from there.
+Transfer the zip via your preferred channel and **verify the `.zip.sha256`** on the other side. Everything is plain text / JSON, so it is usable anywhere with nothing but a text editor - drive `Verify.md` from there.
 
 ## Scope discipline
 
-The target is **one host**. Everything else the tools surface - SANs, subdomains, co-hosted siblings, InternetDB hostnames, passive-DNS neighbours - is written to `OOS_observed.txt` as **OUT OF SCOPE, DO NOT TEST**, never into the active worklist. The guard is automatic so a junior tester cannot drift across the line.
+The target is **one host**. Everything else the tools surface - SANs, subdomains, co-hosted siblings, InternetDB hostnames, passive-DNS neighbours - is written to `OOS_observed.txt` as **OUT OF SCOPE, DO NOT TEST**, never into the active worklist. The guard is automatic, so off-host assets cannot accidentally end up on the active list.
 
 ## Notes
 
-- **Keys are per-tester.** `config\keys.ps1` is git-ignored. Ship only `keys.example.ps1`; rotate any key that ever lands in a log.
+- **Keys** live in `config\keys.ps1`, which is git-ignored. Never commit real keys; ship only `keys.example.ps1`, and rotate any key that ever lands in a log.
 - **Why PowerShell, not Git Bash:** avoids MSYS path-mangling of slash args; HTTP lookups use `Invoke-RestMethod` (no curl arg-mangling).
 - **Tech fingerprints:** `config\wappalyzer.json` is a slimmed, MIT-licensed Wappalyzer ruleset (via ProjectDiscovery `wappalyzergo`; see `config\wappalyzer.LICENSE`) - body-matchable patterns only, matched **passively** against archived bodies. Header/JS-only technologies (Shopify, Next.js) are invisible this way by design.
-- **Do not** point a hosted online scanner at a client target - it is active-by-proxy and leaks the asset. Self-host any such tool inside the VDI.
+- **Do not** point a hosted online scanner at the target - it is active-by-proxy and leaks the asset.
 - **Extending:** each phase is a `PhaseN-*` function in `Invoke-AssetLens.ps1`. Add a source by writing into the matching `0N_` folder and calling `Add-OOS` for anything off-host.
 - `-Setup` adds Go's `%GOPATH%\bin` tools; if `subfinder` etc. read MISSING after install, add that dir to PATH and restart the shell.
 
 ---
 
 <p align="center">
-  Passive package. All active verification happens in the authorized VDI. Nothing in <code>OOS_observed.txt</code> is in scope.
+  Passive collection only. Nothing in <code>OOS_observed.txt</code> is in scope to test.
 </p>

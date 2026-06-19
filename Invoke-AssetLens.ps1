@@ -2,7 +2,7 @@
 .SYNOPSIS
     AssetLens : ONE script for passive recon on a SINGLE internet-facing host.
     PASSIVE = zero packets to the target; all data from third-party sources.
-    Active verification is deferred to the authorized VDI.
+    Active verification is out of scope (this is a passive collector).
 
 .DESCRIPTION
     Seven modes (keys live in config\keys.ps1, git-ignored - never in this script):
@@ -15,7 +15,7 @@
       DIFF              .\Invoke-AssetLens.ps1 -Diff -Package .\output\<host>_<new> -Against .\output\<host>_<old>
       VALIDATE          .\Invoke-AssetLens.ps1 -Validate   (live-check API keys + tools; hits providers + benign IPs, no target)
 
-    -Report / -MapUat / -Zip / -Diff are pure-local (no network/installs) - safe to run INSIDE the VDI.
+    -Report / -MapUat / -Zip / -Diff are pure-local (no network/installs) - safe to run anywhere.
 #>
 #Requires -Version 5.1
 [CmdletBinding()]
@@ -217,7 +217,7 @@ function Build-Report {
     W ""
     W "## 2. Vulnerabilities (passive)"
     if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) on the exposed IP:" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
-    else { W "_None flagged by InternetDB. Still version-check the services above inside the VDI._" }
+    else { W "_None flagged by InternetDB. Still version-check the services above._" }
     if ($cpes.Count) { W ""; W ("**Tech / CPEs:** " + (($cpes | Select-Object -First 20) -join ', ')) }
     $rj = GJson '06_js\retirejs.json'
     if ($rj -and $rj.data) {
@@ -251,7 +251,7 @@ function Build-Report {
             }
         }
         if ($libs.Count) {
-            W ""; W ("**Vulnerable JS libraries (retire.js): {0}** - confirm the live versions in the VDI:" -f $libs.Count)
+            W ""; W ("**Vulnerable JS libraries (retire.js): {0}** - confirm the live versions:" -f $libs.Count)
             foreach ($k in ($libs.Keys | Sort-Object @{ Expression = { $s = [string]$libs[$_].sev; if ($rank.ContainsKey($s)) { $rank[$s] } else { 9 } } }, @{ Expression = { $_ } })) {
                 $cv = (@($libs[$k].cves) | Sort-Object | ForEach-Object { '[{0}]({1}{0})' -f $_, $nvd }) -join ', '
                 $sr = if ($libs[$k].src) { '  _' + $libs[$k].src + '_' } else { '' }
@@ -262,7 +262,7 @@ function Build-Report {
     W ""
     W "## 3. Origin candidates (behind CDN)"
     if (@($cands).Count) {
-        W "IPs presenting the target's cert on non-CDN addresses - **probe each from the VDI to see if it serves the app directly (WAF bypass).** InternetDB ports/CVEs shown to prioritise:"; W ""
+        W "IPs presenting the target's cert on non-CDN addresses - **probe each to see if it serves the app directly (WAF bypass).** InternetDB ports/CVEs shown to prioritise:"; W ""
         $cShow = if (@($candsEnr).Count) { $candsEnr } else { $cands }
         foreach ($c in $cShow) { W "- ``$c``" }
     } else { W "_No distinct origin candidates found._" }
@@ -281,7 +281,7 @@ function Build-Report {
         foreach ($e in (@($apiEp) | Select-Object -First 25)) { W ("- ``{0}``" -f $e.Trim()) }
         if (@($apiEp).Count -gt 25) { W ("- _...+{0} more in 06_js\api_spec_endpoints.txt_" -f (@($apiEp).Count - 25)) }
     }
-    if (@($apiRefs).Count) { W ""; W ("**{0} API-spec URL(s)** referenced - fetch live in the VDI to recover the contract (06_js\api_spec_refs.txt)" -f @($apiRefs).Count) }
+    if (@($apiRefs).Count) { W ""; W ("**{0} API-spec URL(s)** referenced - fetch live to recover the contract (06_js\api_spec_refs.txt)" -f @($apiRefs).Count) }
     $uris = GLines '05_history\uris.txt'
     if (@($uris).Count) { W ""; W ("**{0} unique URIs** (paths across all observed hosts) -> ``05_history\uris.txt``. Replay onto a UAT/staging host (never crawled) with ``Invoke-AssetLens.ps1 -MapUat -Package . -UatBase <url>`` -> uat_targets.txt." -f @($uris).Count) }
     $exts = GLines '05_history\extensions.txt'
@@ -300,7 +300,7 @@ function Build-Report {
     if ($glGen.Count) { W ("- gitleaks: {0} generic-api-key match(es) - high-false-positive rule on minified/archived JS; triage, don't trust the count" -f $glGen.Count) }
     if (Has '07_osint\leakix_host.json') { W "- **LeakIX**: exposures captured in 07_osint\leakix_host.json (review)" }
     if (@($ghHits).Count) { W ("- **GitHub code**: {0} hit(s) referencing the host - 07_osint\github_hits.txt" -f @($ghHits).Count) }
-    if (@($cloud).Count) { W ("- **Cloud storage**: {0} S3/Azure/GCS/Firebase URL(s) in archived JS - 06_js\cloud_assets.txt (check for public/listable buckets in the VDI)" -f @($cloud).Count) }
+    if (@($cloud).Count) { W ("- **Cloud storage**: {0} S3/Azure/GCS/Firebase URL(s) in archived JS - 06_js\cloud_assets.txt (check for public/listable buckets)" -f @($cloud).Count) }
     if (@($smSrc).Count) { $anySecret = $true; W ("- **Source maps**: {0} original source path(s) recovered from archived .js.map - 06_js\sourcemap_sources.txt (internal app structure exposed)" -f @($smSrc).Count) }
     if (@($smRef).Count) { W ("- Source-map refs: {0} .map URL(s) - 06_js\sourcemap_refs.txt (fetch from the archive to recover source)" -f @($smRef).Count) }
     if (-not $anySecret -and -not $thUnv.Count -and -not $glGen.Count -and -not @($smRef).Count -and -not (Has '07_osint\leakix_host.json') -and -not @($ghHits).Count -and -not @($cloud).Count) { W "_No secrets/leaks flagged._" }
@@ -316,7 +316,7 @@ function Build-Report {
     $oosClean = @($oos)
     W ("{0} off-host asset(s) recorded in OOS_observed.txt. Not in scope." -f $oosClean.Count)
     W ""
-    W "## 8. Prioritized next actions (inside VDI)"
+    W "## 8. Prioritized next actions"
     W "1. **Probe origin candidates** with httpx + screenshot - any that serve the app bypass the CDN/WAF."
     W ("2. **Confirm the {0} exposed ports** are open, version the services, match CVEs above." -f $ports.Count)
     W "3. **Replay prod URIs on UAT** - ``Invoke-AssetLens.ps1 -MapUat -UatBase https://<uat-host>`` -> uat_targets.txt, then ``httpx -l uat_targets.txt`` / nuclei. UAT is never crawled, so these harvested paths ARE your endpoint list."
@@ -324,7 +324,7 @@ function Build-Report {
     W "5. **Validate every secret** in section 5 (live? still valid?)."
     W "6. **Review in-scope cert SANs** for alternate names of the same app."
     W ""
-    W "_Passive package. All active verification happens in the authorized VDI. Nothing in OOS_observed.txt is in scope._"
+    W "_Passive package. Nothing in OOS_observed.txt is in scope._"
     [System.IO.File]::WriteAllText((P 'Report.md'), ($out -join "`r`n"), $u8)
 
     # ============ HTML report (dashboard layout; self-contained, no external deps, light/dark adaptive) ============
@@ -459,7 +459,7 @@ function Build-Report {
             HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">endpoint(s) recovered from an archived OpenAPI/Swagger spec - the full contract</span></div>' -f @($apiEp).Count)
             HW '<div class="src" style="line-height:1.9">'; foreach ($e in (@($apiEp) | Select-Object -First 12)) { HW ((HE $e) + '<br>') }; HW '</div>'
         }
-        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) in 06_js\api_spec_refs.txt - fetch live in the VDI</div>' -f @($apiRefs).Count) }
+        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) in 06_js\api_spec_refs.txt - fetch live</div>' -f @($apiRefs).Count) }
         HW '</div>'
     }
     HW '<div class="card"><h2>attack surface</h2>'
@@ -475,7 +475,7 @@ function Build-Report {
     if (@($cloud).Count) {
         HW ('<div class="card"><h2>cloud storage - {0} URL(s)</h2>' -f @($cloud).Count)
         HW '<div class="src" style="line-height:1.9">'; foreach ($u in (@($cloud) | Select-Object -First 6)) { HW ((HE $u) + '<br>') }; HW '</div>'
-        HW '<div class="muted" style="font-size:12px;margin-top:4px">check for public / listable buckets in the VDI</div></div>'
+        HW '<div class="muted" style="font-size:12px;margin-top:4px">check for public / listable buckets</div></div>'
     }
     HW '<div class="card"><h2>OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
     HW ('<div class="muted">org emails: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($emails).Count)
@@ -485,7 +485,7 @@ function Build-Report {
     if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <span style="font-weight:500;color:{0}">{1}</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--text)' }), $opc) }
     if ($abuse) { HW ('<div class="muted">AbuseIPDB: <span style="font-weight:500;color:{0}">{1}/100</span> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--text)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType))) }
     HW '</div></div>'
-    HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test &middot; all active verification deferred to the authorised VDI</div>' -f $oosClean.Count)
+    HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test</div>' -f $oosClean.Count)
     HW '</div></body></html>'
     [System.IO.File]::WriteAllText((P 'Report.html'), ($h -join "`n"), $u8)
     Write-Host "Report written: $(P 'Report.md')  +  Report.html" -ForegroundColor Green
@@ -509,7 +509,7 @@ function Invoke-MapUat {
     Write-Host ("Mapped {0} URIs from prod recon onto {1}" -f $targets.Count, $UatBase) -ForegroundColor Green
     Write-Host ("Wrote: {0}" -f $outFile) -ForegroundColor Green
     Write-Host ""
-    Write-Host "Run these against the UAT host inside the VDI:" -ForegroundColor Cyan
+    Write-Host "Run these against the UAT host:" -ForegroundColor Cyan
     Write-Host ("  httpx  -l `"{0}`" -sc -title -mc 200,204,301,302,401,403,500" -f $outFile)
     Write-Host ("  Burp Intruder: send {0}/ to Intruder, set the path as the payload position, load `"{1}`" as the payload list (Sniper)" -f $UatBase, $src)
     Write-Host ("  nuclei -l `"{0}`" -t <templates>" -f $outFile)
@@ -537,7 +537,7 @@ function New-PackageZip {
     $skipped = if ($FullBodies) { 0 } else { @(Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue).Count }
     Write-Host ("Zip:    {0}  ({1:N1} MB)" -f $zip, ((Get-Item $zip).Length / 1MB)) -ForegroundColor Green
     if ($skipped) { Write-Host ("        excluded {0} raw response bodies (kept on disk in 06_js\responses\; -FullBodies to include)" -f $skipped) -ForegroundColor DarkGray }
-    Write-Host ("SHA256: {0}  -> {1}.sha256  (verify after transfer into the VDI)" -f $hash, (Split-Path $zip -Leaf)) -ForegroundColor Green
+    Write-Host ("SHA256: {0}  -> {1}.sha256  (verify after transfer)" -f $hash, (Split-Path $zip -Leaf)) -ForegroundColor Green
 }
 
 # ================================================================ DIFF mode (compare two packages of the same host)
@@ -621,7 +621,7 @@ function Invoke-Validate {
     if ($Keys.AbuseIPDB) { $r = Hit 'https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=90' @{ Key = $Keys.AbuseIPDB; Accept = 'application/json' }; if ($r.ok -and $r.obj.data) { Vline 'AbuseIPDB' 'VALID' 'Green' } else { Vline 'AbuseIPDB' ("FAIL ({0})" -f $r.code) 'Red' } } else { Vline 'AbuseIPDB' 'not set' 'DarkGray' }
     Show 'Quake'          $Keys.Quake          (Hit 'https://quake.360.net/api/v3/user/info' @{ 'X-QuakeToken' = $Keys.Quake })
     Write-Host ''
-    Write-Host 'Run before an engagement to catch dead keys / missing tools. Probes hit the API providers + benign IPs only - never a target.' -ForegroundColor Cyan
+    Write-Host 'Run before a scan to catch dead keys / missing tools. Probes hit the API providers + benign IPs only - never a target.' -ForegroundColor Cyan
 }
 
 # ================================================================ mode dispatch (non-recon modes return)
@@ -811,7 +811,7 @@ function Phase1-Scope {
         if ($geo -and $geo.success) {
             Save-Json (Join-Path $pkg '01_scope\geo.json') $geo
             Write-Log ("Geo: {0}, {1} ({2}) - {3} / AS{4}" -f $geo.city, $geo.country, $geo.country_code, $geo.connection.org, $geo.connection.asn) 'OK'
-            # country flag SVG (keyless CDN, not the target) -> embedded in the report, works offline in the VDI
+            # country flag SVG (keyless CDN, not the target) -> embedded in the report, works offline
             $cc = ([string]$geo.country_code).ToLower()
             if ($cc -match '^[a-z]{2}$') { try { Invoke-WebRequest ("https://flagcdn.com/{0}.svg" -f $cc) -OutFile (Join-Path $pkg '01_scope\flag.svg') -UseBasicParsing -TimeoutSec 15 | Out-Null; Write-Log ("Country flag: {0}.svg" -f $cc) 'OK' } catch { Write-Log 'Flag fetch failed (non-fatal)' 'WARN' } }
         }
@@ -1149,7 +1149,7 @@ function Phase6-Js {
     # source maps: original-source disclosure (bodies that ARE maps) + .map leads (sourceMappingURL refs)
     if ($smSrc.Count) { Save-Lines (Join-Path $jsDir 'sourcemap_sources.txt') (@($smSrc) | Sort-Object) }
     if ($smRef.Count) { Save-Lines (Join-Path $jsDir 'sourcemap_refs.txt') (@($smRef) | Sort-Object) }
-    # API spec discovery: parsed contract (from archived spec bodies) + spec-URL leads (to fetch live in the VDI)
+    # API spec discovery: parsed contract (from archived spec bodies) + spec-URL leads (to fetch live)
     $apiRefs = @($links | Where-Object { $_ -match '(?i)(swagger|/api-docs|openapi\.json|swagger-ui|/v[0-9]+/api-docs|apispec|redoc|swagger\.(json|yaml))' } | Sort-Object -Unique)
     if ($apiEp.Count)   { Save-Lines (Join-Path $jsDir 'api_spec_endpoints.txt') (@($apiEp) | Sort-Object -Unique) }
     if ($apiRefs.Count) { Save-Lines (Join-Path $jsDir 'api_spec_refs.txt') $apiRefs }
@@ -1268,7 +1268,7 @@ function Write-Index {
 Every artifact was obtained from third-party data sources (certificate
 transparency, internet-scan databases, web archives, RDAP, OSINT APIs).
 **No packets were sent to $Target from the collecting host.** All active
-verification is deferred to the authorized VDI - see Verify_inside_vdi.md.
+verification is out of scope here - see Verify.md.
 
 ## SCOPE
 In-scope: $Target (single host). Every other host/IP/asset discovered is in
@@ -1279,12 +1279,12 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 - 01_scope    RDAP (apex) + DNS records (MX/TXT/NS) + IP(s) + geo + M365/Azure tenant + CDN flag
 - 02_certs    CT-log SANs (in-scope flagged)
 - 03_scan     Shodan-InternetDB + Shodan/Censys/Netlas host (ports / services / CVEs) + AbuseIPDB IP-reputation
-- 04_origin   origin-behind-CDN candidates (verify in VDI)
+- 04_origin   origin-behind-CDN candidates (verify when testing)
 - 05_history  archived URLs, uro-deduped, URIs (UAT replay), params, extensions
 - 06_js       archived responses + native-regex endpoints/params/wordlist + trufflehog/gitleaks/retire.js
 - 07_osint    Tranco, GitHub (code + commit-emails), OTX threat-intel, LeakIX, emails, breach exposure
 - 08_tech     CPEs + InternetDB CVEs
-- Verify_inside_vdi.md   ranked active-test worklist
+- Verify.md   ranked active-test worklist
 - OOS_observed.txt   off-host assets (DO NOT TEST)
 - manifest.sha256    integrity
 "@
@@ -1296,15 +1296,15 @@ function Write-Worklist {
     $ports = ''
     $pf = Join-Path $pkg '03_scan\ports.txt'
     if (Test-Path $pf) { $ports = ((Get-Content $pf) -join ', ') }
-    Save-Text (Join-Path $pkg 'Verify_inside_vdi.md') @"
-# Verify inside VDI - $Target
+    Save-Text (Join-Path $pkg 'Verify.md') @"
+# Verify - $Target
 
-Active steps only. Run from the authorized VDI. Read Report.md first.
+Active steps only. Run where you are authorized to test. Read Report.md first.
 
 1. Probe host + every origin candidate with httpx; screenshot.
    - host: $Target ($IP)
    - origin candidates (does origin answer directly, bypassing any WAF?): $origins
-2. Confirm the exposed ports are open from the VDI: $ports
+2. Confirm the exposed ports are open: $ports
    - cross-check 08_tech\internetdb_vulns.txt + 06_js\retirejs.json against the live versions.
 3. Replay prod URIs on UAT: Invoke-AssetLens.ps1 -MapUat -Package . -UatBase https://<uat> -> uat_targets.txt, then httpx/nuclei.
 4. Load 05_history\uris.txt + 06_js\wordlist.txt + params.txt into Burp Intruder (payload sets); katana to crawl. Scan 05_history\urls_by_ext.txt for sensitive file types.
@@ -1344,12 +1344,12 @@ Write-Host ''
 Write-Log "DONE  package: $pkg" 'OK'
 Write-Log ('OOS assets noted: {0}  (see OOS_observed.txt)' -f $OOS.Count) $(if ($OOS.Count) { 'OOS' } else { 'INFO' })
 
-# manifest LAST (so it covers the final recon.log), then zip + hash for VDI transfer
+# manifest LAST (so it covers the final recon.log), then zip + hash for transfer
 $manifest = Get-ChildItem $pkg -Recurse -File | Where-Object { $_.Name -ne 'manifest.sha256' } |
     ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.FullName.Substring($pkg.Length + 1) }
 Save-Lines (Join-Path $pkg 'manifest.sha256') $manifest
 try { New-PackageZip -Package $pkg -FullBodies:$FullBodies } catch { Write-Host "zip failed: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 Write-Host ''
-Write-Host '  Next: transfer the .zip into the VDI (verify .zip.sha256), then work Verify_inside_vdi.md' -ForegroundColor Cyan
+Write-Host '  Next: transfer the .zip (verify .zip.sha256), then work Verify.md' -ForegroundColor Cyan
 Write-Host ''
