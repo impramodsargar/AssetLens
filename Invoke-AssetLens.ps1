@@ -153,6 +153,7 @@ function Build-Report {
     $apiRefs = GLines '06_js\api_spec_refs.txt'
     $nvd     = 'https://nvd.nist.gov/vuln/detail/'
     $geo     = GJson '01_scope\geo.json'
+    $m365    = GJson '01_scope\m365.json'
     $worldPath = ''; $wpf = Join-Path $PSScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw).Trim() }
     $flagSvg = ''; $fff = Join-Path $Package '01_scope\flag.svg'; if (Test-Path $fff) { $flagSvg = (Get-Content $fff -Raw).Trim() }
 
@@ -218,6 +219,12 @@ function Build-Report {
     W ("| {0} | {1} | {2} | {3} |" -f $(if ($ip) { $ip } else { 'n/a' }), $(if ($owner) { $owner } else { 'n/a' }), $(if ($cdnName) { 'YES - ' + $cdnName } else { 'none detected' }), $(if ($tranco.ranks) { $tranco.ranks[0].rank } else { 'n/a' }))
     W ""
     if ($geo) { W ("**Host location:** {0}{1} ({2}) &middot; {3} &middot; AS{4}" -f $(if ($geo.city) { $geo.city + ', ' } else { '' }), $geo.country, $geo.country_code, $geo.connection.org, $geo.connection.asn); W "" }
+    if ($m365 -and $m365.isAzureAD) {
+        W ("**Microsoft 365 / Azure AD:** {0}{1}{2}" -f $m365.namespaceType, $(if ($m365.tenantId) { ' &middot; tenant `' + $m365.tenantId + '`' } else { '' }), $(if ($m365.tenantRegion) { ' &middot; region ' + $m365.tenantRegion } else { '' }))
+        if ($m365.namespaceType -eq 'Federated' -and $m365.federationAuthUrl) { W ("- Federated IdP / ADFS auth URL: ``{0}`` (on-prem identity surface)" -f $m365.federationAuthUrl) }
+        if (@($m365.tenantDomains).Count) { W ("- {0} tenant domain(s) (off-host, see OOS): {1}" -f @($m365.tenantDomains).Count, ((@($m365.tenantDomains) | Select-Object -First 15) -join ', ')) }
+        W ""
+    }
     W "## Security scorecard"
     W ("**Score {0}/100 &middot; Grade {1}** - {2} critical / {3} high / {4} medium / {5} low / {6} info" -f $score, $grade, $cCrit, $cHigh, $cMed, $cLow, $cInfo)
     W ""
@@ -413,6 +420,17 @@ function Build-Report {
             if ($kv[1] -and $kv[1] -ne 'AS') { HW ('<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-top:0.5px solid var(--border)"><span class="muted">{0}</span><span style="text-align:right;word-break:break-word">{1}</span></div>' -f $kv[0], (HE $kv[1])) }
         }
         HW '</div></div></div>'
+    }
+    if ($m365 -and $m365.isAzureAD) {
+        HW '<div class="card"><h2>identity &middot; Microsoft 365 / Azure AD</h2><div style="font-size:13px">'
+        foreach ($kv in @(@('namespace', [string]$m365.namespaceType), @('tenant ID', [string]$m365.tenantId), @('region', [string]$m365.tenantRegion), @('brand', [string]$m365.federationBrand), @('IdP / ADFS auth URL', [string]$m365.federationAuthUrl), @('cloud', [string]$m365.cloudInstance))) {
+            if ($kv[1]) { HW ('<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-top:0.5px solid var(--border)"><span class="muted">{0}</span><span class="mono" style="text-align:right;word-break:break-all">{1}</span></div>' -f $kv[0], (HE $kv[1])) }
+        }
+        if (@($m365.tenantDomains).Count) {
+            HW ('<div style="margin-top:8px"><span class="muted" style="font-size:12px">{0} tenant domain(s) &middot; off-host, recorded in OOS:</span>' -f @($m365.tenantDomains).Count)
+            HW '<div class="src" style="line-height:1.8;margin-top:3px">'; foreach ($d in (@($m365.tenantDomains) | Select-Object -First 20)) { HW ((HE $d) + '<br>') }; HW '</div></div>'
+        }
+        HW '</div></div>'
     }
     HW '<div class="grid2">'
     HW '<div class="card"><h2>vulnerable JS libraries</h2>'
@@ -625,7 +643,7 @@ function Invoke-Validate {
         if (Get-Command $t -ErrorAction SilentlyContinue) { Vline $t 'OK' 'Green' } else { Vline $t 'missing' 'DarkGray' }
     }
     Write-Host "`nKeyless sources:" -ForegroundColor Cyan
-    foreach ($pr in @(@('Shodan-InternetDB', 'https://internetdb.shodan.io/8.8.8.8'), @('crt.sh', 'https://crt.sh/?q=example.com&output=json'), @('RDAP', 'https://rdap.org/domain/example.com'), @('Tranco', 'https://tranco-list.eu/api/ranks/domain/google.com'), @('LeakCheck', 'https://leakcheck.io/api/public?check=test@example.com'))) {
+    foreach ($pr in @(@('Shodan-InternetDB', 'https://internetdb.shodan.io/8.8.8.8'), @('crt.sh', 'https://crt.sh/?q=example.com&output=json'), @('RDAP', 'https://rdap.org/domain/example.com'), @('Tranco', 'https://tranco-list.eu/api/ranks/domain/google.com'), @('LeakCheck', 'https://leakcheck.io/api/public?check=test@example.com'), @('M365 / Azure AD', 'https://login.microsoftonline.com/common/userrealm/user@example.com?api-version=1.0'))) {
         $r = Hit $pr[1]; if ($r.ok) { Vline $pr[0] 'OK' 'Green' } elseif (($r.code -is [int]) -and ($r.code -lt 500)) { Vline $pr[0] ("reachable ({0})" -f $r.code) 'Green' } else { Vline $pr[0] ("down ({0})" -f $r.code) 'Yellow' }
     }
     Write-Host "`nAPI keys:" -ForegroundColor Cyan
@@ -731,6 +749,38 @@ function Get-Apex {
     if ($multi -contains $last2) { return ($p[-3..-1]) -join '.' }
     return $last2
 }
+function Get-M365Tenant {
+    # PASSIVE Microsoft 365 / Azure AD tenant mapping. Queries Microsoft's OWN shared endpoints about the
+    # domain (login.microsoftonline.com + autodiscover-s.outlook.com) - ZERO packets to the target host. Keyless.
+    param([string]$Domain)
+    $m = [ordered]@{ domain = $Domain; isAzureAD = $false; namespaceType = ''; tenantId = ''; tenantRegion = '';
+                     federationBrand = ''; federationAuthUrl = ''; cloudInstance = ''; tenantDomains = @() }
+    # 1) user-realm: Managed (cloud auth) vs Federated (ADFS/3rd-party IdP - exposes the on-prem auth URL)
+    $ur = Invoke-Json ("https://login.microsoftonline.com/common/userrealm/user@{0}?api-version=1.0" -f $Domain)
+    if ($ur) {
+        $m.namespaceType     = [string]$ur.account_type
+        $m.cloudInstance     = [string]$ur.cloud_instance_name
+        $m.federationBrand   = [string]$ur.federation_brand_name
+        $m.federationAuthUrl = [string]$ur.federation_active_auth_url
+        if ($m.namespaceType -in @('Managed', 'Federated')) { $m.isAzureAD = $true }
+    }
+    if (-not $m.isAzureAD) { return $m }   # not a Microsoft tenant -> stop (also avoids a 400 on the openid call)
+    # 2) OpenID config: tenant ID (GUID from the issuer URL) + region scope
+    $oidc = Invoke-Json ("https://login.microsoftonline.com/{0}/v2.0/.well-known/openid-configuration" -f $Domain)
+    if ($oidc -and $oidc.issuer) {
+        if ($oidc.issuer -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') { $m.tenantId = $matches[1] }
+        $m.tenantRegion = [string]$oidc.tenant_region_scope
+    }
+    # 3) Autodiscover GetFederationInformation (SOAP) -> every domain registered in the tenant
+    try {
+        $soap = '<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Header><a:Action soap:mustUnderstand="1">http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation</a:Action><a:To soap:mustUnderstand="1">https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc</a:To><a:ReplyTo><a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address></a:ReplyTo></soap:Header><soap:Body><GetFederationInformationRequestMessage xmlns="http://schemas.microsoft.com/exchange/2010/Autodiscover"><Request><Domain>' + $Domain + '</Domain></Request></GetFederationInformationRequestMessage></soap:Body></soap:Envelope>'
+        $hdrs = @{ SOAPAction = '"http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation"'; 'User-Agent' = 'AutodiscoverClient' }
+        $resp = Invoke-RestMethod -Uri 'https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc' -Method Post -Body $soap -ContentType 'text/xml; charset=utf-8' -Headers $hdrs -TimeoutSec 30 -ErrorAction Stop
+        $doms = @($resp.Envelope.Body.GetFederationInformationResponseMessage.Response.Domains.Domain | Where-Object { $_ })
+        $m.tenantDomains = @($doms | ForEach-Object { ([string]$_).ToLower() } | Sort-Object -Unique)
+    } catch {}
+    return $m
+}
 # (uncover bridge removed - origin engines are queried directly in P4)
 
 # ---------------------------------------------------------------- scope guard (single host)
@@ -806,6 +856,14 @@ function Phase1-Scope {
             if ($cc -match '^[a-z]{2}$') { try { Invoke-WebRequest ("https://flagcdn.com/{0}.svg" -f $cc) -OutFile (Join-Path $pkg '01_scope\flag.svg') -UseBasicParsing -TimeoutSec 15 | Out-Null; Write-Log ("Country flag: {0}.svg" -f $cc) 'OK' } catch { Write-Log 'Flag fetch failed (non-fatal)' 'WARN' } }
         }
     }
+    # PASSIVE Microsoft 365 / Azure AD tenant mapping (apex-level identity; queries Microsoft, never the target)
+    $m365 = Get-M365Tenant (Get-Apex $Target)
+    if ($m365.isAzureAD) {
+        Save-Json (Join-Path $pkg '01_scope\m365.json') $m365
+        Write-Log ("M365/Azure AD: {0} | tenant {1}{2}{3}" -f $m365.namespaceType, $(if ($m365.tenantId) { $m365.tenantId } else { '?' }), $(if ($m365.tenantRegion) { " | region $($m365.tenantRegion)" } else { '' }), $(if (@($m365.tenantDomains).Count) { " | $(@($m365.tenantDomains).Count) tenant domain(s)" } else { '' })) 'OK'
+        if ($m365.namespaceType -eq 'Federated' -and $m365.federationAuthUrl) { Write-Log ("  Federated IdP/ADFS auth URL: {0}" -f $m365.federationAuthUrl) 'OK' }
+        foreach ($d in @($m365.tenantDomains)) { if ($d -and $d -ne (Get-Apex $Target)) { Add-OOS $d 'M365 tenant domain' } }
+    } else { Write-Log 'M365/Azure AD: domain not in a Microsoft tenant' 'INFO' }
 }
 
 function Phase2-Certs {
@@ -1200,7 +1258,7 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 
 ## CONTENTS
 - 00_REPORT.md   synthesized human-readable brief (read first)
-- 01_scope    RDAP (apex) + DNS records (MX/TXT/NS) + IP(s) + CDN flag
+- 01_scope    RDAP (apex) + DNS records (MX/TXT/NS) + IP(s) + geo + M365/Azure tenant + CDN flag
 - 02_certs    CT-log SANs (in-scope flagged)
 - 03_scan     Shodan-InternetDB + Shodan/Censys/Netlas host (ports / services / CVEs)
 - 04_origin   origin-behind-CDN candidates (verify in VDI)

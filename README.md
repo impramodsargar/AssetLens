@@ -59,7 +59,7 @@ Set the passive boundary with the client and pick the mode to match. The chosen 
 
 | Phase | Source | Key? |
 |---|---|---|
-| **P1** scope | RDAP (apex) + **DNS records (MX/TXT-SPF/DMARC/NS/CNAME)** + IP(s) + **geo-location & country flag** (ipwho.is / flagcdn), netblock owner, CDN/WAF flag | keyless |
+| **P1** scope | RDAP (apex) + **DNS records (MX/TXT-SPF/DMARC/NS/CNAME)** + IP(s) + **geo-location & country flag** (ipwho.is / flagcdn) + **Microsoft 365 / Azure AD tenant mapping** (tenant ID, Managed/Federated, ADFS URL, tenant domains — queries Microsoft, not the target), netblock owner, CDN/WAF flag | keyless |
 | **P2** certs | crt.sh SANs (in-scope flagged); `subfinder` | keyless |
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Fofa/Quake) direct cert→IP pivot; Netlas domain | keyed |
