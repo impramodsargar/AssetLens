@@ -31,12 +31,12 @@ Output lands in `output\app.target.com_<date>\`. Step 2 (keys) is optional — s
 
 | Command | What it does |
 |---|---|
-| `.\Invoke-AssetLens.ps1 <host>` | **RECON** → package + `00_REPORT.md` + auto-zip (add `-UatBase https://uat..` to also map URIs) |
+| `.\Invoke-AssetLens.ps1 <host>` | **RECON** → package + `Report.md` + auto-zip (add `-UatBase https://uat..` to also map URIs) |
 | `.\Invoke-AssetLens.ps1 -Setup [-SkipBase]` | install the toolchain |
-| `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `00_REPORT.md` on a package — pure local, runs **inside the VDI** |
+| `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` on a package — pure local, runs **inside the VDI** |
 | `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map prod URIs → `uat_targets.txt` — pure local, runs **inside the VDI** |
 | `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw response bodies excluded by default |
-| `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans of the same host → `00_DIFF.md` (new ports/CVEs/SANs/endpoints) — pure local |
+| `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans of the same host → `Diff.md` (new ports/CVEs/SANs/endpoints) — pure local |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
 
 ---
@@ -51,7 +51,7 @@ Output lands in `output\app.target.com_<date>\`. Step 2 (keys) is optional — s
 | `-Keyless` | Ignore `config\keys.ps1` — run only the no-key sources. Default (no flag) uses your keys for the widest coverage. |
 | `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** — single-host scope. Only for wildcard / multi-host engagements. |
 
-Set the passive boundary with the client and pick the mode to match. The chosen mode is recorded in `00_INDEX.md`.
+Set the passive boundary with the client and pick the mode to match. The chosen mode is recorded in `Index.md`.
 
 ---
 
@@ -75,12 +75,12 @@ Missing tool or missing key → that step logs `SKIP` and the run continues. Cov
 
 ```
 output/<host>_<date>/
-  00_REPORT.md             <- security scorecard + ranked findings + brief (READ THIS FIRST)
-  00_REPORT.html           <- same, MobSF-style dashboard (score/grade, findings; self-contained, light/dark)
-  00_INDEX.md              attestation + mode + key status
+  Report.md             <- security scorecard + ranked findings + brief (READ THIS FIRST)
+  Report.html           <- same, MobSF-style dashboard (score/grade, findings; self-contained, light/dark)
+  Index.md              attestation + mode + key status
   01_scope/  02_certs/  03_scan/  04_origin/
   05_history/  06_js/  07_osint/  08_tech/
-  09_VERIFY_INSIDE_VDI.md  ← ranked active worklist (the bridge)
+  Verify_inside_vdi.md  ← ranked active worklist (the bridge)
   OOS_observed.txt         every off-host asset, flagged DO NOT TEST
   manifest.sha256          integrity / chain-of-custody
   recon.log
@@ -92,7 +92,7 @@ Each recon run **auto-creates** `output\<host>_<date>.zip` + `.zip.sha256`. Re-z
 ```powershell
 .\Invoke-AssetLens.ps1 -Zip -Package output\<host>_<date>
 ```
-Transfer the zip via the client-approved channel and **verify `.zip.sha256`** on the other side. Everything is plain text/JSON, so it's usable inside a locked-down VDI with no tools — drive `09_VERIFY_INSIDE_VDI.md` from there.
+Transfer the zip via the client-approved channel and **verify `.zip.sha256`** on the other side. Everything is plain text/JSON, so it's usable inside a locked-down VDI with no tools — drive `Verify_inside_vdi.md` from there.
 
 ---
 

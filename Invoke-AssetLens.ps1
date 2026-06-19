@@ -29,7 +29,7 @@ param(
     [string]$UatBase,                           # RECON: also map URIs onto this UAT base at the end
     [switch]$Setup,                             # SETUP mode: bootstrap the toolchain
     [switch]$SkipBase,                          # SETUP: tools only (skip winget base runtimes)
-    [switch]$Report,                            # REPORT mode: (re)build 00_REPORT.md on -Package
+    [switch]$Report,                            # REPORT mode: (re)build Report.md on -Package
     [switch]$MapUat,                            # MAP-UAT mode: map URIs onto -UatBase on -Package
     [string]$Package,                           # package dir for -Report / -MapUat
     [switch]$WithParams,                        # MAP-UAT: use path+query URIs
@@ -359,7 +359,7 @@ function Build-Report {
     W "6. **Review in-scope cert SANs** for alternate names of the same app."
     W ""
     W "_Passive package. All active verification happens in the authorized VDI. Nothing in OOS_observed.txt is in scope._"
-    [System.IO.File]::WriteAllText((P '00_REPORT.md'), ($out -join "`r`n"), $u8)
+    [System.IO.File]::WriteAllText((P 'Report.md'), ($out -join "`r`n"), $u8)
 
     # ============ HTML report (dashboard layout; self-contained, no external deps, light/dark adaptive) ============
     function HE { param($s) ([string]$s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;') }
@@ -526,8 +526,8 @@ function Build-Report {
     HW '</div></div>'
     HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test &middot; all active verification deferred to the authorised VDI</div>' -f $oosClean.Count)
     HW '</div></body></html>'
-    [System.IO.File]::WriteAllText((P '00_REPORT.html'), ($h -join "`n"), $u8)
-    Write-Host "Report written: $(P '00_REPORT.md')  +  00_REPORT.html" -ForegroundColor Green
+    [System.IO.File]::WriteAllText((P 'Report.html'), ($h -join "`n"), $u8)
+    Write-Host "Report written: $(P 'Report.md')  +  Report.html" -ForegroundColor Green
     Write-Host ("  sections: services={0} ports, vulns={1}, origins={2}, hot-endpoints={3}, params={4}, emails={5}" -f $ports.Count, $vulns.Count, @($cands).Count, $hot.Count, $allParams.Count, @($emails).Count)
 }
 
@@ -615,7 +615,7 @@ function Invoke-Diff {
         }
     }
     if (-not $changed) { $out.Add('_No changes across tracked files (ports/CVEs/SANs/origins/URIs/endpoints/cloud/emails/OOS)._') }
-    $dst = Join-Path $New '00_DIFF.md'
+    $dst = Join-Path $New 'Diff.md'
     [System.IO.File]::WriteAllText($dst, ($out -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host ('Diff written: {0}' -f $dst) -ForegroundColor Green
     Write-Host ''
@@ -1234,7 +1234,7 @@ function Write-Index {
     $modeStr = if ($Strict) { 'STRICT (no DNS resolution; passive-DNS APIs only)' } else { 'PRAGMATIC (single DNS resolution permitted)' }
     $keysOn  = @($Keys.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { $_.Key }) -join ', '
     if (-not $keysOn) { $keysOn = '(none - keyless run)' }
-    Save-Text (Join-Path $pkg '00_INDEX.md') @"
+    Save-Text (Join-Path $pkg 'Index.md') @"
 # AssetLens Package - $Target
 
 | field | value |
@@ -1250,14 +1250,14 @@ function Write-Index {
 Every artifact was obtained from third-party data sources (certificate
 transparency, internet-scan databases, web archives, RDAP, OSINT APIs).
 **No packets were sent to $Target from the collecting host.** All active
-verification is deferred to the authorized VDI - see 09_VERIFY_INSIDE_VDI.md.
+verification is deferred to the authorized VDI - see Verify_inside_vdi.md.
 
 ## SCOPE
 In-scope: $Target (single host). Every other host/IP/asset discovered is in
 **OOS_observed.txt** - OUT OF SCOPE, DO NOT TEST.
 
 ## CONTENTS
-- 00_REPORT.md   synthesized human-readable brief (read first)
+- Report.md   synthesized human-readable brief (read first)
 - 01_scope    RDAP (apex) + DNS records (MX/TXT/NS) + IP(s) + geo + M365/Azure tenant + CDN flag
 - 02_certs    CT-log SANs (in-scope flagged)
 - 03_scan     Shodan-InternetDB + Shodan/Censys/Netlas host (ports / services / CVEs)
@@ -1266,7 +1266,7 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 - 06_js       archived responses + native-regex endpoints/params/wordlist + trufflehog/gitleaks/retire.js
 - 07_osint    Tranco, GitHub, LeakIX, emails, breach exposure
 - 08_tech     CPEs + InternetDB CVEs
-- 09_VERIFY_INSIDE_VDI.md   ranked active-test worklist
+- Verify_inside_vdi.md   ranked active-test worklist
 - OOS_observed.txt   off-host assets (DO NOT TEST)
 - manifest.sha256    integrity
 "@
@@ -1278,10 +1278,10 @@ function Write-Worklist {
     $ports = ''
     $pf = Join-Path $pkg '03_scan\ports.txt'
     if (Test-Path $pf) { $ports = ((Get-Content $pf) -join ', ') }
-    Save-Text (Join-Path $pkg '09_VERIFY_INSIDE_VDI.md') @"
+    Save-Text (Join-Path $pkg 'Verify_inside_vdi.md') @"
 # Verify inside VDI - $Target
 
-Active steps only. Run from the authorized VDI. Read 00_REPORT.md first.
+Active steps only. Run from the authorized VDI. Read Report.md first.
 
 1. Probe host + every origin candidate with httpx; screenshot.
    - host: $Target ($IP)
@@ -1317,8 +1317,8 @@ Write-Index    $ip
 Write-Worklist $ip
 Save-Lines (Join-Path $pkg 'OOS_observed.txt') (@('# OUT OF SCOPE - observed only, DO NOT TEST', '# <host>  <tab>  <source>', '') + @($OOS))
 
-# synthesize the human-readable report (00_REPORT.md) from the collected artifacts
-try { Build-Report -Package $pkg | Out-Null; Write-Log 'report -> 00_REPORT.md' 'OK' } catch { Write-Log "report failed: $($_.Exception.Message)" 'WARN' }
+# synthesize the human-readable report (Report.md) from the collected artifacts
+try { Build-Report -Package $pkg | Out-Null; Write-Log 'report -> Report.md' 'OK' } catch { Write-Log "report failed: $($_.Exception.Message)" 'WARN' }
 # optional: map URIs onto a UAT base if -UatBase was given
 if ($UatBase) { try { Invoke-MapUat -Package $pkg -UatBase $UatBase | Out-Null; Write-Log 'UAT targets -> 05_history\uat_targets.txt' 'OK' } catch { Write-Log "map-uat failed: $($_.Exception.Message)" 'WARN' } }
 
@@ -1333,5 +1333,5 @@ Save-Lines (Join-Path $pkg 'manifest.sha256') $manifest
 try { New-PackageZip -Package $pkg -FullBodies:$FullBodies } catch { Write-Host "zip failed: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 Write-Host ''
-Write-Host '  Next: transfer the .zip into the VDI (verify .zip.sha256), then work 09_VERIFY_INSIDE_VDI.md' -ForegroundColor Cyan
+Write-Host '  Next: transfer the .zip into the VDI (verify .zip.sha256), then work Verify_inside_vdi.md' -ForegroundColor Cyan
 Write-Host ''
