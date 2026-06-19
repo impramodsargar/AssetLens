@@ -64,7 +64,7 @@ Set the passive boundary with the client and pick the mode to match. The chosen 
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Fofa/Quake) direct cert→IP pivot; Netlas domain | keyed |
 | **P5** history | `gau` + `waybackurls` + urlscan → urls, params, js; **`uro`** collapses near-duplicate URL patterns | keyless core |
-| **P6** js | **`waymore`** downloads archived responses → **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint**/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
+| **P6** js | **`waymore`** downloads archived responses → **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint (built-in signatures + bundled Wappalyzer ruleset, matched passively against the bodies)**/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search; IntelX; LeakIX; Hunter emails → **LeakCheck** breach-check (free/keyless); SpiderFoot passive | mixed |
 
 Missing tool or missing key → that step logs `SKIP` and the run continues. Coverage scales with what you've installed/configured.
@@ -114,4 +114,5 @@ The target is **one host**. Everything else the tools surface — SANs, subdomai
 - Why PowerShell, not Git Bash: avoids MSYS path-mangling of slash args; HTTP lookups use `Invoke-RestMethod` (no curl arg-mangling).
 - `-Setup` adds Go's `%GOPATH%\bin` tools — if `subfinder` etc. read MISSING after install, add that dir to PATH and restart the shell.
 - crt.sh and the archive endpoints rate-limit; a `WARN` on one lookup doesn't abort the run.
+- **Tech fingerprints:** `config\wappalyzer.json` is a slimmed, MIT-licensed Wappalyzer ruleset (via ProjectDiscovery `wappalyzergo`; see `config\wappalyzer.LICENSE`) — body-matchable patterns only, matched **passively** against archived bodies (zero requests to the target). Header/JS-only technologies (e.g. Shopify, Next.js) can't be seen this way by design.
 ```

@@ -1085,6 +1085,7 @@ function Phase6-Js {
         'reCAPTCHA'          = 'recaptcha'
     }
     $techHits = @{}
+    $corpus = New-Object System.Text.StringBuilder   # combined body text for Wappalyzer-style matching (capped ~6MB)
     # source maps: a body that IS a map -> original source tree; a sourceMappingURL ref -> a lead
     $smSrc = New-Object System.Collections.Generic.HashSet[string]
     $smRef = New-Object System.Collections.Generic.HashSet[string]
@@ -1093,6 +1094,7 @@ function Phase6-Js {
     foreach ($f in (Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue)) {
         $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $c) { continue }
+        if ($corpus.Length -lt 3000000) { $seg = $(if ($c.Length -gt 80000) { $c.Substring(0, 80000) } else { $c }); [void]$corpus.Append($seg).Append("`n") }
         foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$links.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
         foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$links.Add($m.Groups[1].Value) }
         foreach ($tk in $techSig.Keys) { if ($c -match $techSig[$tk]) { $techHits[$tk] = [int]$techHits[$tk] + 1 } }
@@ -1143,6 +1145,34 @@ function Phase6-Js {
     foreach ($tk in ($techHits.Keys | Sort-Object { $techHits[$_] } -Descending)) { $techOut.Add(('{0,-22} {1} bodies' -f $tk, $techHits[$tk])) }
     foreach ($eh in $extHints.Keys) { if ($extsF | Where-Object { $_ -match ([regex]::Escape($eh) + '$') }) { $techOut.Add(('{0,-22} (via {1} URLs)' -f $extHints[$eh], $eh)) } }
     if (Test-Path (Join-Path $pkg '08_tech\cpes.txt')) { foreach ($cp in (Get-Content (Join-Path $pkg '08_tech\cpes.txt') -ErrorAction SilentlyContinue)) { if ($cp) { $techOut.Add(('{0,-22} (InternetDB CPE)' -f $cp)) } } }
+    # Wappalyzer-style passive fingerprint: match the bundled MIT ruleset (config\wappalyzer.json) against the body
+    # corpus. Zero new requests - reads only the bodies waymore already pulled. Broadens beyond the curated $techSig.
+    $wappaFile = Join-Path $PSScriptRoot 'config\wappalyzer.json'
+    if ((Test-Path $wappaFile) -and $corpus.Length) {
+        $corpusStr = $corpus.ToString()
+        $wappa = $null; try { $wappa = Get-Content $wappaFile -Raw | ConvertFrom-Json } catch { Write-Log "wappalyzer.json parse failed: $($_.Exception.Message)" 'WARN' }
+        if ($wappa) {
+            $already = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($tk in $techHits.Keys) { [void]$already.Add([string]$tk) }
+            $wHits = @{}
+            Write-Log ('Wappalyzer fingerprint: matching {0}-tech ruleset vs {1:N0} KB body corpus...' -f @($wappa).Count, ($corpusStr.Length / 1KB)) 'INFO'
+            foreach ($t in $wappa) {
+                foreach ($pat in $t.p) {
+                    $ok = $false; try { $ok = [regex]::IsMatch($corpusStr, [string]$pat, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromSeconds(2)) } catch {}
+                    if ($ok) { $wHits[[string]$t.n] = (@($t.c) -join ', '); break }
+                }
+            }
+            # fold in 'implies' (tech A present => tech B) so dependency stacks surface too
+            foreach ($t in $wappa) { if ($wHits.ContainsKey([string]$t.n) -and $t.i) { foreach ($im in $t.i) { if (-not $wHits.ContainsKey([string]$im)) { $wHits[[string]$im] = '(implied)' } } } }
+            $wNew = 0
+            foreach ($n in ($wHits.Keys | Sort-Object)) {
+                if ($already.Contains($n)) { continue }
+                $det = $(if ($wHits[$n]) { $wHits[$n] + ' (Wappalyzer)' } else { '(Wappalyzer)' })
+                $techOut.Add(('{0,-22} {1}' -f $n, $det)); $wNew++
+            }
+            Write-Log ("Wappalyzer: {0} tech(s) matched in archived bodies ({1} new beyond built-in signatures)" -f $wHits.Count, $wNew) 'OK'
+        }
+    }
     if ($techOut.Count) { Save-Lines (Join-Path $pkg '08_tech\fingerprint.txt') $techOut }
     # source maps: original-source disclosure (bodies that ARE maps) + .map leads (sourceMappingURL refs)
     if ($smSrc.Count) { Save-Lines (Join-Path $jsDir 'sourcemap_sources.txt') (@($smSrc) | Sort-Object) }
