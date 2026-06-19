@@ -115,7 +115,7 @@ The chosen mode is recorded in `Index.md`.
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host; **AbuseIPDB** IP-reputation | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert -> IP pivot; Netlas domain | keyed |
 | **P5** history | `gau` + `waybackurls` + **CommonCrawl CDX** + urlscan -> urls, params, js; **`uro`** collapses near-duplicate URL patterns | keyless core |
-| **P6** js | **`waymore`** downloads archived responses -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
+| **P6** js | **`waymore`** downloads archived responses (+ VirusTotal & URLScan keyed URL sources when keys are set) -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
 
 > Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
