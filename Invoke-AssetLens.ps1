@@ -176,41 +176,6 @@ function Build-Report {
     $sig = '(?i)(/admin|/api|/auth|/login|/logout|/signup|/register|password|reset|token|oauth|/sso|upload|/download|/config|/setting|debug|/internal|/private|graphql|/gql|swagger|openapi|\.json|\.xml|\.env|backup|/export|/import|/payment|/invoice|/account|webhook|/callback|redirect)'
     $hot = @($dedupUrls | Where-Object { $_ -match $sig } | Sort-Object -Unique)
 
-    # ---- findings engine: turn collected signals into ranked findings + a MobSF-style score/grade ----
-    $rjF = GJson '06_js\retirejs.json'
-    $extsF = GLines '05_history\extensions.txt'
-    $sevRank = @{ critical = 0; high = 1; medium = 2; low = 3; info = 4 }
-    $findings = New-Object System.Collections.Generic.List[hashtable]
-    function AddF { param($sev, $title, $impact, $ev, $rec) $findings.Add(@{ sev = $sev; title = $title; impact = $impact; ev = $ev; rec = $rec }) }
-    if ($rjF -and $rjF.data) {
-        $seenL = @{}
-        foreach ($d in $rjF.data) { foreach ($r in $d.results) {
-            $k = ('{0} {1}' -f $r.component, $r.version).Trim(); if ($seenL.ContainsKey($k)) { continue }; $seenL[$k] = $true
-            $sv = 'low'; $cv = New-Object System.Collections.Generic.HashSet[string]
-            foreach ($v in $r.vulnerabilities) { if ($v.severity -and $sevRank.ContainsKey([string]$v.severity)) { if ($sevRank[[string]$v.severity] -lt $sevRank[$sv]) { $sv = [string]$v.severity } }; foreach ($cve in $v.identifiers.CVE) { if ($cve) { [void]$cv.Add([string]$cve) } } }
-            AddF $sv "Vulnerable JS library - $k" "Outdated library with published CVEs shipped in the live front-end bundle." ((@($cv) | Sort-Object) -join ', ') "Confirm the live version in the VDI; trace whether a vulnerable sink is reachable from user input."
-        } }
-    }
-    if ($vulns.Count) { AddF 'high' ("{0} known CVE(s) on exposed service(s)" -f $vulns.Count) "InternetDB flags published CVEs against the versions exposed on the host's open ports." (($vulns | Select-Object -First 8) -join ', ') "Version-check the service in the VDI and match version-specific exploits." }
-    if ($thVer.Count) { AddF 'critical' ("{0} verified secret(s) leaked" -f $thVer.Count) "trufflehog verified a LIVE credential in archived front-end content." ((@($thVer.DetectorName) | Sort-Object -Unique) -join ', ') "Rotate immediately and assess the credential's blast radius." }
-    if (@($dns).Count) {
-        if (-not ($dns | Where-Object { $_ -match 'v=spf1' })) { AddF 'medium' 'No SPF record' "The apex publishes no SPF policy - the domain can be spoofed in phishing." 'no v=spf1 TXT on the apex' 'Publish an SPF record ending in -all.' }
-        if (-not ($dns | Where-Object { $_ -match 'DMARC1' })) { AddF 'medium' 'No DMARC record' "No DMARC policy - spoofed mail is neither rejected nor reported." 'no _dmarc TXT on the apex' 'Publish DMARC with p=reject and an rua address.' }
-    }
-    if (@($smSrc).Count -or @($smRef).Count) { AddF 'low' 'Source maps exposed' "Production JS references source maps; if served, the full pre-minification source (paths, comments, logic) is recoverable." ("{0} source-map artefact(s) - 06_js\sourcemap_*.txt" -f $(if (@($smSrc).Count) { @($smSrc).Count } else { @($smRef).Count })) 'Fetch each .map in the VDI; mine recovered source for endpoints and secrets.' }
-    $sensF = @($extsF | Where-Object { $_ -match '(?i)\.(config|bak|sql|sqlite|db|env|pem|key|p12|pfx|old|wsdl|asmx|svc|yml|yaml|ini|conf|log|xls|xlsx|git)$' })
-    if ($sensF.Count) { AddF 'medium' 'Sensitive file types referenced' "URLs reference sensitive extensions (configs, backups, keys, DB dumps) that legacy stacks often serve unauthenticated." (($sensF | ForEach-Object { ($_ -split '\s{2,}')[-1] } | Select-Object -First 8) -join ', ') 'Request each in the VDI.' }
-    if (@($cands).Count -and $cdnName) { AddF 'medium' ("{0} origin IP(s) behind {1}" -f @($cands).Count, $cdnName) "Direct-origin IPs recovered; reaching the app on these bypasses the CDN/WAF." (($cands | Select-Object -First 5) -join ', ') 'Probe each origin in the VDI for direct app access.' }
-    if (@($cloud).Count) { AddF 'low' ("{0} cloud-storage URL(s) referenced" -f @($cloud).Count) "S3/Azure/GCS asset URLs in the front-end; buckets may be public or listable." (($cloud | Select-Object -First 3) -join '  ') 'Check each bucket for public read / listing in the VDI.' }
-    if (@($apiEp).Count) { AddF 'info' ("API spec exposed - {0} endpoints" -f @($apiEp).Count) "An archived OpenAPI/Swagger spec exposes the full API contract." ("06_js\api_spec_endpoints.txt") 'Test every documented endpoint and parameter from the contract.' }
-    elseif (@($apiRefs).Count) { AddF 'info' 'API spec URL(s) referenced' "Spec endpoints referenced in the front-end; the contract may be fetchable live." ("{0} spec-URL lead(s)" -f @($apiRefs).Count) 'Fetch the spec in the VDI.' }
-    if (@($tech | Where-Object { $_ -match '(?i)WebForms|AjaxControlToolkit' }).Count) { AddF 'low' 'Legacy server stack' "A legacy ASP.NET WebForms / AjaxControlToolkit stack presents a broad dated surface (ViewState integrity, deserialization, old component CVEs)." (($tech | Where-Object { $_ -match '(?i)WebForms|AjaxControlToolkit' } | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() }) -join ', ') 'Check ViewState MAC/encryption and component versions against known advisories.' }
-
-    $findings = @($findings | Sort-Object @{ Expression = { $sevRank[[string]$_.sev] } })
-    $cCrit = @($findings | Where-Object { $_.sev -eq 'critical' }).Count; $cHigh = @($findings | Where-Object { $_.sev -eq 'high' }).Count
-    $cMed = @($findings | Where-Object { $_.sev -eq 'medium' }).Count; $cLow = @($findings | Where-Object { $_.sev -eq 'low' }).Count; $cInfo = @($findings | Where-Object { $_.sev -eq 'info' }).Count
-    $score = 100 - ($cCrit * 25 + $cHigh * 12 + $cMed * 6 + $cLow * 2); if ($score -lt 0) { $score = 0 }; if ($score -gt 100) { $score = 100 }
-    $grade = $(if ($score -ge 90) { 'A' } elseif ($score -ge 75) { 'B' } elseif ($score -ge 60) { 'C' } elseif ($score -ge 40) { 'D' } else { 'F' })
 
     W "# Recon Report - $host_"
     W ""
@@ -227,9 +192,6 @@ function Build-Report {
         if (@($m365.tenantDomains).Count) { W ("- {0} tenant domain(s) (off-host, see OOS): {1}" -f @($m365.tenantDomains).Count, ((@($m365.tenantDomains) | Select-Object -First 15) -join ', ')) }
         W ""
     }
-    W "## Security scorecard"
-    W ("**Score {0}/100 &middot; Grade {1}** - {2} critical / {3} high / {4} medium / {5} low / {6} info" -f $score, $grade, $cCrit, $cHigh, $cMed, $cLow, $cInfo)
-    W ""
     W "## Executive summary"
     $hotN = $hot.Count; $secN = ($thVer.Count + $glSpec.Count)
     W ("- **$host_** -> **$ip**" + $(if ($owner) { " ($owner)" } else { '' }) + $(if ($cdnName) { ", behind " + $cdnName } else { '' }) + ".")
@@ -395,13 +357,6 @@ function Build-Report {
     HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; PASSIVE RECON</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)))
     HW $(if ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
     HW '</div>'
-    $gradeColor = $(if ($score -ge 75) { 'var(--ok)' } elseif ($score -ge 50) { 'var(--wn)' } else { 'var(--dn)' })
-    HW '<div class="card" style="display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-top:6px">'
-    HW ('<div style="text-align:center;min-width:64px"><div style="font-size:38px;font-weight:600;line-height:1;color:{0}">{1}</div><div class="muted" style="font-size:11px;margin-top:3px">score / 100</div></div>' -f $gradeColor, $score)
-    HW ('<div style="text-align:center;min-width:46px"><div style="font-size:34px;font-weight:600;line-height:1;color:{0}">{1}</div><div class="muted" style="font-size:11px;margin-top:3px">grade</div></div>' -f $gradeColor, $grade)
-    HW '<div style="display:flex;gap:7px;flex-wrap:wrap">'
-    foreach ($sc in @(@('critical', $cCrit), @('high', $cHigh), @('medium', $cMed), @('low', $cLow), @('info', $cInfo))) { HW ('<span class="sev" style="{0}">{1} {2}</span>' -f (SevS $sc[0]), $sc[1], $sc[0]) }
-    HW '</div></div>'
     HW '<div class="tiles">'
     HW ('<div class="tile"><div class="l">ports</div><div class="n">{0}</div></div>' -f $ports.Count)
     HW ('<div class="tile"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></div>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))

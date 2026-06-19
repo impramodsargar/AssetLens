@@ -75,8 +75,8 @@ Missing tool or missing key → that step logs `SKIP` and the run continues. Cov
 
 ```
 output/<host>_<date>/
-  Report.md             <- security scorecard + ranked findings + brief (READ THIS FIRST)
-  Report.html           <- same, MobSF-style dashboard (score/grade, findings; self-contained, light/dark)
+  Report.md             <- synthesized brief: services / CVEs / origins / attack-surface / secrets / OSINT (READ THIS FIRST)
+  Report.html           <- same, dashboard layout (metric tiles + host-location map + detail cards; self-contained, light/dark)
   Index.md              attestation + mode + key status
   01_scope/  02_certs/  03_scan/  04_origin/
   05_history/  06_js/  07_osint/  08_tech/
