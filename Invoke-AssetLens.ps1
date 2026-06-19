@@ -1000,6 +1000,20 @@ function Phase5-History {
     $us = Invoke-Json "https://urlscan.io/api/v1/search/?q=domain:$Target" $h
     if ($us) { Save-Json (Join-Path $pkg '05_history\urlscan.json') $us; foreach ($r in $us.results) { if ($r.page.url) { [void]$urls.Add([string]$r.page.url) } } }
 
+    # scope hygiene: archived-URL sources (esp. urlscan's domain: search) surface pages that merely REFERENCE the
+    # target - keep only URLs under the target's apex; off-domain hosts go to OOS, never the attack surface.
+    $apexL = Get-Apex $Target
+    $inScopeUrls = New-Object System.Collections.Generic.HashSet[string]
+    $offDomain = 0
+    foreach ($u in $urls) {
+        $uh = ''; try { $uh = ([uri][string]$u).Host.ToLower() } catch {}
+        if (-not $uh) { continue }
+        if ($uh -eq $apexL -or $uh.EndsWith('.' + $apexL)) { [void]$inScopeUrls.Add([string]$u) }
+        else { Add-OOS $uh 'archived URL (off-domain)'; $offDomain++ }
+    }
+    if ($offDomain) { Write-Log ("scope filter: {0} off-domain archived URL(s) -> OOS (kept out of attack surface)" -f $offDomain) 'INFO' }
+    $urls = $inScopeUrls
+
     $all = @($urls) | Sort-Object
     Save-Lines (Join-Path $pkg '05_history\all_urls.txt') $all
     # uro: collapse near-duplicate URL patterns into a clean representative endpoint set
