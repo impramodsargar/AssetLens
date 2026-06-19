@@ -330,6 +330,8 @@ function Build-Report {
     # ============ HTML report (dashboard layout; self-contained, no external deps, light/dark adaptive) ============
     function HE { param($s) ([string]$s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;') }
     function SevS { param($s) switch -Regex ($s) { 'critical|high' { 'background:var(--dn-bg);color:var(--dn)' } 'medium' { 'background:var(--wn-bg);color:var(--wn)' } default { 'background:var(--tile);color:var(--muted)' } } }
+    # FL: relative link to a package file/folder when it exists (Report.html sits at the package root; $rel uses backslashes, href is forward-slashed)
+    function FLink { param($rel, $label) $disp = $(if ($label) { $label } else { $rel }); if (Test-Path (P $rel)) { ('<a href="{0}">{1}</a>' -f ($rel -replace '\\', '/'), (HE $disp)) } else { (HE $disp) } }
     $rankH = @{ 'critical' = 0; 'high' = 1; 'medium' = 2; 'low' = 3 }
     $sevHi = 0; $sevMd = 0; $sevLo = 0
     foreach ($lk in $libs.Keys) { $ls = [string]$libs[$lk].sev; if ($ls -match 'critical|high') { $sevHi++ } elseif ($ls -eq 'medium') { $sevMd++ } else { $sevLo++ } }
@@ -352,6 +354,7 @@ function Build-Report {
     HW '.src{font-family:ui-monospace,monospace;font-size:12px;color:var(--info);word-break:break-all}.cve{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);word-break:break-all;margin:3px 0}'
     HW '.grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}@media(max-width:680px){.grid2{grid-template-columns:1fr}}.locgrid{display:grid;grid-template-columns:1.7fr 1fr;gap:16px;align-items:start}@media(max-width:640px){.locgrid{grid-template-columns:1fr}}.flag{display:inline-block;border-radius:2px;overflow:hidden;border:0.5px solid var(--border);vertical-align:middle;line-height:0}.flag svg{width:24px;height:auto;display:block}'
     HW 'ul{margin:6px 0;padding-left:18px}li{margin:3px 0}.muted{color:var(--muted)}.bar{display:flex;height:8px;border-radius:6px;overflow:hidden;margin:2px 0 8px}a{color:var(--info);text-decoration:none}'
+    HW 'details{margin:6px 0}summary{cursor:pointer;color:var(--info);font-size:12px;font-weight:500;list-style:none}summary::-webkit-details-marker{display:none}.files{display:flex;flex-wrap:wrap}.files a{margin:3px 14px 3px 0;font-size:13px}.flink{font-size:12px}'
     HW '</style></head><body><div class="wrap">'
     HW '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
     HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; PASSIVE RECON</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)))
@@ -361,7 +364,7 @@ function Build-Report {
     HW ('<div class="tile"><div class="l">ports</div><div class="n">{0}</div></div>' -f $ports.Count)
     HW ('<div class="tile"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></div>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<div class="tile"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></div>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<div class="tile"><div class="l">endpoints</div><div class="n">{0}</div></div>' -f @($xEnd).Count)
+    HW ('<div class="tile"><div class="l">endpoints</div><div class="n">{0}</div></div>' -f $(if (Test-Path (P '06_js\endpoints.txt')) { FLink '06_js\endpoints.txt' @($xEnd).Count } else { @($xEnd).Count }))
     HW ('<div class="tile"><div class="l">live secrets</div><div class="n"{1}>{0}</div></div>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<div class="tile"><div class="l">out-of-scope</div><div class="n">{0}</div></div>' -f $oosClean.Count)
     HW '</div>'
@@ -442,8 +445,9 @@ function Build-Report {
         if (@($smSrc).Count) {
             HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">original source path(s) recovered - internal app structure exposed</span></div>' -f @($smSrc).Count)
             HW '<div class="src" style="line-height:1.9">'; foreach ($s in (@($smSrc) | Select-Object -First 8)) { HW ((HE $s) + '<br>') }; HW '</div>'
+            if (@($smSrc).Count -gt 8) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\sourcemap_sources.txt' ('all ' + @($smSrc).Count + ' paths'))) }
         }
-        if (@($smRef).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} .map reference(s) in 06_js\sourcemap_refs.txt - fetch from the archive to recover source</div>' -f @($smRef).Count) }
+        if (@($smRef).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} .map reference(s) -> {1} - fetch from the archive to recover source</div>' -f @($smRef).Count, (FLink '06_js\sourcemap_refs.txt' 'sourcemap_refs.txt')) }
         HW '</div>'
     }
     if (@($cands).Count) {
@@ -458,8 +462,9 @@ function Build-Report {
         if (@($apiEp).Count) {
             HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">endpoint(s) recovered from an archived OpenAPI/Swagger spec - the full contract</span></div>' -f @($apiEp).Count)
             HW '<div class="src" style="line-height:1.9">'; foreach ($e in (@($apiEp) | Select-Object -First 12)) { HW ((HE $e) + '<br>') }; HW '</div>'
+            if (@($apiEp).Count -gt 12) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\api_spec_endpoints.txt' ('all ' + @($apiEp).Count + ' endpoints'))) }
         }
-        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) in 06_js\api_spec_refs.txt - fetch live</div>' -f @($apiRefs).Count) }
+        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) -> {1} - fetch live</div>' -f @($apiRefs).Count, (FLink '06_js\api_spec_refs.txt' 'api_spec_refs.txt')) }
         HW '</div>'
     }
     HW '<div class="card"><h2>attack surface</h2>'
@@ -470,11 +475,13 @@ function Build-Report {
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> params</span>' -f $allParams.Count)
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> URIs</span>' -f @($uris).Count)
     HW '</div>'
-    if ($hot.Count) { HW '<div class="src" style="margin-top:8px;line-height:1.9">'; foreach ($u in ($hot | Select-Object -First 8)) { HW ((HE $u) + '<br>') }; HW '</div>' }
+    if ($hot.Count) { HW '<div class="src" style="margin-top:8px;line-height:1.9">'; foreach ($u in ($hot | Select-Object -First 8)) { HW ((HE $u) + '<br>') }; HW '</div>'; if ($hot.Count -gt 8) { HW ('<div class="flink muted" style="margin-top:2px">+{0} more high-signal</div>' -f ($hot.Count - 8)) } }
+    HW ('<div class="flink muted" style="margin-top:8px">open: {0} &middot; {1} &middot; {2} &middot; {3} &middot; {4}</div>' -f (FLink '05_history\all_urls.txt' 'all_urls'), (FLink '05_history\urls_deduped.txt' 'deduped'), (FLink '05_history\uris.txt' 'uris'), (FLink '05_history\params.txt' 'params'), (FLink '06_js\endpoints.txt' 'endpoints'))
     HW '</div>'
     if (@($cloud).Count) {
         HW ('<div class="card"><h2>cloud storage - {0} URL(s)</h2>' -f @($cloud).Count)
         HW '<div class="src" style="line-height:1.9">'; foreach ($u in (@($cloud) | Select-Object -First 6)) { HW ((HE $u) + '<br>') }; HW '</div>'
+        if (@($cloud).Count -gt 6) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\cloud_assets.txt' ('all ' + @($cloud).Count + ' URLs'))) }
         HW '<div class="muted" style="font-size:12px;margin-top:4px">check for public / listable buckets</div></div>'
     }
     HW '<div class="card"><h2>OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
@@ -484,6 +491,13 @@ function Build-Report {
     if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($ghHits).Count) }
     if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <span style="font-weight:500;color:{0}">{1}</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--text)' }), $opc) }
     if ($abuse) { HW ('<div class="muted">AbuseIPDB: <span style="font-weight:500;color:{0}">{1}/100</span> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--text)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType))) }
+    HW '</div></div>'
+    HW '<div class="card"><h2>package files</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:6px">raw artifacts - click to open (works when this report is viewed from inside its package folder)</div>'
+    HW '<div class="files mono">'
+    foreach ($d in @('01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech')) { if (Test-Path (P $d)) { HW (FLink ($d + '\') ($d + '/')) } }
+    HW '</div><div class="files mono" style="margin-top:6px">'
+    foreach ($fdoc in @('Index.md', 'Verify.md', 'OOS_observed.txt', 'manifest.sha256', 'recon.log', '05_history\all_urls.txt', '05_history\uris.txt', '06_js\endpoints.txt', '06_js\wordlist.txt')) { if (Test-Path (P $fdoc)) { HW (FLink $fdoc) } }
     HW '</div></div>'
     HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test</div>' -f $oosClean.Count)
     HW '</div></body></html>'
