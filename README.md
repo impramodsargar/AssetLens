@@ -1,4 +1,9 @@
-<h1 align="center">AssetLens</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img alt="AssetLens" src="assets/logo-light.svg" width="260">
+  </picture>
+</p>
 
 <p align="center">
   <b>Passive reconnaissance for a single internet-facing host. Zero packets to the target.</b>
