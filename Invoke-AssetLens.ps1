@@ -78,7 +78,7 @@ function Invoke-Setup {
         if (-not (Has jq))     { WG 'jqlang.jq' }
         Write-Host 'If Go/Python were just installed, RESTART this shell, then run:  .\Invoke-AssetLens.ps1 -Setup -SkipBase' -ForegroundColor Yellow
     }
-    $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest', 'github.com/tomnomnom/waybackurls@latest')
+    $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest')
     $gobin = $null
     if (Has go) {
         Write-Host 'Go tools...' -ForegroundColor Cyan
@@ -97,7 +97,7 @@ function Invoke-Setup {
     if (Has npm) { Write-Host 'Node tools (retire.js)...' -ForegroundColor Cyan; npm install -g retire | Out-Null }
     Write-Host ''
     Write-Host 'Tool check:' -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'waybackurls', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
+    foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
         $ok = (Has $t) -or ($binDest -and (Test-Path (Join-Path $binDest "$t.exe")))
         Write-Host ('  {0,-14} {1}' -f $t, $(if ($ok) { 'OK' } else { 'MISSING' })) -ForegroundColor $(if ($ok) { 'Green' } else { 'DarkGray' })
     }
@@ -614,7 +614,7 @@ function Invoke-Validate {
     function Show { param($name, $present, $res, $detail = '') if (-not $present) { Vline $name 'not set' 'DarkGray' } elseif ($res.ok) { Vline $name 'VALID' 'Green' $detail } else { Vline $name ("FAIL ({0})" -f $res.code) 'Red' } }
 
     Write-Host "`nTools:" -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'waybackurls', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
+    foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
         if (Get-Command $t -ErrorAction SilentlyContinue) { Vline $t 'OK' 'Green' } else { Vline $t 'missing' 'DarkGray' }
     }
     Write-Host "`nKeyless sources:" -ForegroundColor Cyan
@@ -967,25 +967,20 @@ function Phase4-Origin {
 function Phase5-History {
     Write-Log 'P5  historical urls / params / endpoints'
     $urls = New-Object System.Collections.Generic.HashSet[string]
-    # (raw Wayback CDX dropped - flaky timeouts; gau + waybackurls cover the same archives reliably)
-    foreach ($t in 'gau', 'waybackurls') { $o = Invoke-Tool $t @($Target); if ($o) { foreach ($u in $o) { if ($u) { [void]$urls.Add([string]$u) } } } }
-    # CommonCrawl CDX - more archived URLs for the host (keyless HTTP; latest crawl index)
-    try {
-        $ccol = Invoke-Json 'https://index.commoncrawl.org/collinfo.json'
-        $ccApi = if ($ccol) { [string]$ccol[0].'cdx-api' } else { '' }
-        if ($ccApi) {
-            $ccN = 0
-            $ccResp = Invoke-WebRequest ('{0}?url={1}/*&output=json&fl=url&limit=1000' -f $ccApi, $Target) -UseBasicParsing -TimeoutSec 60
-            foreach ($ln in ($ccResp.Content -split "`n")) { if ($ln.Trim()) { try { $j = $ln | ConvertFrom-Json; if ($j.url) { [void]$urls.Add([string]$j.url); $ccN++ } } catch {} } }
-            Write-Log ('CommonCrawl: {0} URLs ({1})' -f $ccN, $ccol[0].id) 'OK'
-        }
-    } catch { Write-Log 'CommonCrawl unreachable -> skip' 'SKIP' }
-    $h = @{}; if (Have-Key 'UrlScan') { $h['API-Key'] = $Keys.UrlScan }
-    $us = Invoke-Json "https://urlscan.io/api/v1/search/?q=domain:$Target" $h
-    if ($us) { Save-Json (Join-Path $pkg '05_history\urlscan.json') $us; foreach ($r in $us.results) { if ($r.page.url) { [void]$urls.Add([string]$r.page.url) } } }
-    # NOTE: no VirusTotal URL source here, on purpose. VT's /domains/{d}/urls relationship is PREMIUM-only - free keys
-    # get 403 (confirmed live, both apex and FQDN), and waymore's VT path uses the dead v2 API - so VT URLs need a PAID
-    # key either way. VT IS used on the free key elsewhere: passive-DNS in P4 via the /resolutions relationship (free).
+    # gau: fast, independent backstop aggregator (Wayback + CommonCrawl + OTX + URLScan). Runs FIRST so the URL
+    # inventory survives even if waymore later hangs on a throttled archive (lesson from a real 0-bodies incident).
+    $o = Invoke-Tool 'gau' @($Target); if ($o) { foreach ($u in $o) { if ($u) { [void]$urls.Add([string]$u) } } }
+    # PRIMARY collector: waymore -mode B harvests the URL list AND downloads the archived response bodies in ONE pass
+    # (-oU urls, -oR bodies -> 06_js\responses for P6 to mine). --providers EXCLUDES virustotal + intelx (both PAID,
+    # free keys 403) so there's no -c config and no 403 noise; it ADDS GhostArchive, the one source gau lacks.
+    # NOTE: VirusTotal URLs are unavailable on free keys either way (v3 /urls is premium, v2 is dead); VT's free
+    # contribution is passive-DNS in P4 (/resolutions). -l caps RESPONSES saved, not the URL list (-oU is full).
+    $respDir = Join-Path $pkg '06_js\responses'
+    New-Item -ItemType Directory -Force -Path $respDir | Out-Null
+    $wmUrls = Join-Path $pkg '05_history\waymore_urls.txt'
+    Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'B', '--providers', 'wayback,commoncrawl,otx,urlscan,ghostarchive', '-oU', $wmUrls, '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
+    if (Test-Path $wmUrls) { foreach ($u in (Get-Content $wmUrls -ErrorAction SilentlyContinue)) { if ($u) { [void]$urls.Add([string]$u) } } }
+    Write-Log ('URL collection: gau + waymore (mode B, +GhostArchive) -> {0} raw URL(s)' -f $urls.Count) 'OK'
 
     # scope hygiene: archived-URL sources (esp. urlscan's domain: search) surface pages that merely REFERENCE the
     # target - keep only URLs under the target's apex; off-domain hosts go to OOS, never the attack surface.
@@ -1044,15 +1039,12 @@ function Phase6-Js {
     $jsDir = Join-Path $pkg '06_js'
     $respDir = Join-Path $jsDir 'responses'
     New-Item -ItemType Directory -Force -Path $respDir | Out-Null
-    # waymore mode R: download archived response bodies (incl JS) from the keyless archives (Wayback + CommonCrawl + OTX).
-    # NOTE: do NOT feed VT/URLScan keys via -c. waymore's VirusTotal path uses the dead v2 API (current keys 403),
-    # it queries OTX keyless anyway, and URLScan we already pull directly in P5 - so -c only adds 403 noise, no new URLs.
-    Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'R', '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
-    # only real downloaded bodies are responses - exclude waymore's own bookkeeping (waymore_index.txt + *.tmp)
+    # the archived bodies were already downloaded by waymore (-mode B) back in P5; here we just mine them.
+    # only real bodies count - exclude waymore's own bookkeeping (waymore_index.txt + *.tmp).
     $bodyFiles = @(Get-ChildItem $respDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'waymore_index.txt' -and $_.Name -notlike '*.tmp' })
     $cnt = $bodyFiles.Count
-    if ($cnt -eq 0) { Write-Log 'waymore downloaded 0 responses -> skip extraction' 'WARN'; return }
-    Write-Log "waymore downloaded $cnt archived responses" 'OK'
+    if ($cnt -eq 0) { Write-Log 'no archived responses from P5 -> skip extraction' 'WARN'; return }
+    Write-Log "mining $cnt archived responses (downloaded by waymore in P5)" 'OK'
     # native endpoint/param/wordlist extraction from the bodies (replaced xnLinkFinder, which in v8.2 forces a
     # scope filter, writes to the console not stdout so it can't be captured, and returned 0 on real archived
     # pages; this deterministic regex recovered 3600+ endpoints it missed on a real target)

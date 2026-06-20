@@ -48,7 +48,7 @@
 git clone https://github.com/impramodsargar/AssetLens.git
 cd AssetLens
 
-# 1. install the toolchain (subfinder, gau, waybackurls, waymore, uro, retire.js, trufflehog, gitleaks)
+# 1. install the toolchain (subfinder, gau, waymore, uro, retire.js, trufflehog, gitleaks)
 .\Invoke-AssetLens.ps1 -Setup
 # if Go / Python were just installed, restart the shell, then:
 .\Invoke-AssetLens.ps1 -Setup -SkipBase
@@ -58,7 +58,7 @@ Copy-Item .\config\keys.example.ps1 .\config\keys.ps1
 notepad .\config\keys.ps1
 ```
 
-> The keyless HTTP core (RDAP, crt.sh, Shodan-InternetDB, Tranco, LeakCheck, CommonCrawl, M365 mapping) runs with **zero keys**. Keys only widen coverage; anything left blank is skipped. `config\keys.ps1` is git-ignored - never commit real keys.
+> The keyless HTTP core (RDAP, crt.sh, Shodan-InternetDB, Tranco, LeakCheck, M365 mapping) runs with **zero keys**. Keys only widen coverage; anything left blank is skipped. `config\keys.ps1` is git-ignored - never commit real keys.
 
 ## Usage
 
@@ -114,8 +114,8 @@ The chosen mode is recorded in `Index.md`.
 | **P2** certs | crt.sh SANs (in-scope flagged); `subfinder` (`-Enum`) | keyless |
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host; **AbuseIPDB** IP-reputation | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert -> IP pivot; Netlas domain | keyed |
-| **P5** history | `gau` + `waybackurls` + **CommonCrawl CDX** + urlscan -> urls, params, js; **`uro`** collapses near-duplicate URL patterns | keyless core |
-| **P6** js | **`waymore`** downloads archived responses -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
+| **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
+| **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
 
 > Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
