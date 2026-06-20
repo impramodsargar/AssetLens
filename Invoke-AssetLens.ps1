@@ -983,6 +983,9 @@ function Phase5-History {
     $h = @{}; if (Have-Key 'UrlScan') { $h['API-Key'] = $Keys.UrlScan }
     $us = Invoke-Json "https://urlscan.io/api/v1/search/?q=domain:$Target" $h
     if ($us) { Save-Json (Join-Path $pkg '05_history\urlscan.json') $us; foreach ($r in $us.results) { if ($r.page.url) { [void]$urls.Add([string]$r.page.url) } } }
+    # NOTE: no VirusTotal URL source here, on purpose. VT's /domains/{d}/urls relationship is PREMIUM-only - free keys
+    # get 403 (confirmed live, both apex and FQDN), and waymore's VT path uses the dead v2 API - so VT URLs need a PAID
+    # key either way. VT IS used on the free key elsewhere: passive-DNS in P4 via the /resolutions relationship (free).
 
     # scope hygiene: archived-URL sources (esp. urlscan's domain: search) surface pages that merely REFERENCE the
     # target - keep only URLs under the target's apex; off-domain hosts go to OOS, never the attack surface.
