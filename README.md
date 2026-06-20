@@ -60,6 +60,32 @@ notepad .\config\keys.ps1
 
 > The keyless HTTP core (RDAP, crt.sh, Shodan-InternetDB, Tranco, LeakCheck, M365 mapping) runs with **zero keys**. Keys only widen coverage; anything left blank is skipped. `config\keys.ps1` is git-ignored - never commit real keys.
 
+## API keys
+
+Every key is **optional** and **free-tier** (Shodan is the lone exception). The keyless core already covers RDAP, crt.sh, Shodan-InternetDB, the web archives (Wayback / CommonCrawl / OTX via `gau` + `waymore`), Tranco, urlscan search, and LeakCheck. Add keys only to widen coverage; anything left blank is skipped.
+
+```powershell
+Copy-Item .\config\keys.example.ps1 .\config\keys.ps1
+notepad .\config\keys.ps1
+```
+
+| Provider | Tier | Powers | Where to get the key |
+|---|---|---|---|
+| **VirusTotal** | Free (4/min, 500/day) | P4 passive-DNS, reputation | https://www.virustotal.com/gui/my-apikey |
+| **Censys** | Free (Platform PAT) | P3 host data | https://platform.censys.io |
+| **Netlas** | Free (daily quota) | P3 host + P4 domain | https://netlas.io |
+| **SecurityTrails** | Free (50/mo) | P4 passive-DNS | https://securitytrails.com/app/account/credentials |
+| **URLScan** | Free (raises limits) | P5 history | https://urlscan.io/user/profile |
+| **GitHub** | Free (read-only PAT) | P7 code + commit-email search | https://github.com/settings/tokens |
+| **LeakIX** | Free | P7 host exposure | https://leakix.net/settings/api |
+| **AlienVault OTX** | Free | P7 threat pulses + passive-DNS | https://otx.alienvault.com/api |
+| **AbuseIPDB** | Free (1000/day) | P3 IP reputation | https://www.abuseipdb.com/account/api |
+| **CriminalIP** | Free | P4 origin-behind-CDN pivot | https://www.criminalip.io/mypage/information |
+| **Quake (360)** | Free (token) | P4 origin pivot | https://quake.360.net |
+| **Shodan** | **Paid** membership | P3 host lookup (keyless InternetDB is the free fallback) | https://account.shodan.io |
+
+> The **GitHub** token only needs read-only public access (a classic PAT with `public_repo`, or a fine-grained token with public-repository read). After signup, each key usually lives under your account or profile/API settings. Run `.\Invoke-AssetLens.ps1 -Validate` to live-check every key you added.
+
 ## Usage
 
 ```powershell
