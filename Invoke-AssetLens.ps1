@@ -21,7 +21,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$Target,   # host to recon (RECON mode)
-    [string]$OutRoot = (Join-Path $PSScriptRoot 'output'),
+    [string]$OutRoot = '',
     [switch]$Strict,                            # no DNS resolution; passive-DNS APIs only
     [switch]$HttpOnly,                          # skip CLI tools; HTTP core only
     [switch]$Keyless,                           # RECON: ignore config\keys.ps1 - run keyless sources only (default = use keys if configured)
@@ -43,6 +43,14 @@ param(
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $env:PYTHONIOENCODING = 'utf-8'   # keep Python tools (uro/waymore) from crashing on non-cp1252 stdout on Windows
+
+# resolve the script's own folder. $PSScriptRoot is EMPTY when launched as `powershell -File .\Invoke-AssetLens.ps1`
+# (relative path) on Windows PowerShell, so fall back through other sources, then to the current directory.
+$ScriptRoot = $PSScriptRoot
+if (-not $ScriptRoot -and $PSCommandPath) { $ScriptRoot = Split-Path -Parent $PSCommandPath }
+if (-not $ScriptRoot -and $MyInvocation.MyCommand.Path) { $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $ScriptRoot) { $ScriptRoot = (Get-Location).Path }
+if (-not $OutRoot) { $OutRoot = Join-Path $ScriptRoot 'output' }
 
 # ================================================================ SETUP mode
 function Invoke-Setup {
@@ -156,7 +164,7 @@ function Build-Report {
     $m365    = GJson '01_scope\m365.json'
     $abuse   = GJson '03_scan\abuseipdb.json'
     $otx     = GJson '07_osint\otx_host.json'
-    $worldPath = ''; $wpf = Join-Path $PSScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw).Trim() }
+    $worldPath = ''; $wpf = Join-Path $ScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw).Trim() }
     $flagSvg = ''; $fff = Join-Path $Package '01_scope\flag.svg'; if (Test-Path $fff) { $flagSvg = (Get-Content $fff -Raw).Trim() }
 
     $owner = ''
@@ -602,7 +610,7 @@ function Invoke-Validate {
     Write-Host '== AssetLens validation (keys + tools) ==' -ForegroundColor Cyan
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $Keys = @{}; $Tools = @{ Python = 'python' }
-    $cfg = Join-Path $PSScriptRoot 'config\keys.ps1'
+    $cfg = Join-Path $ScriptRoot 'config\keys.ps1'
     if (Test-Path $cfg) { . $cfg } else { Write-Host 'no config\keys.ps1 (keyless run only)' -ForegroundColor Yellow }
     function Vline { param($n, $s, $c, $d = '') Write-Host ('  {0,-16} {1}{2}' -f $n, $s, $(if ($d) { "  ($d)" } else { '' })) -ForegroundColor $c }
     function Hit { param($u, $h = @{}, $m = 'Get', $b = $null)
@@ -651,7 +659,7 @@ if (-not $Target) { throw 'Provide a target host for RECON, or use -Setup / -Rep
 # Default loads config\keys.ps1 (keyed run). -Keyless skips it - keyless sources only.
 $Keys  = @{}
 $Tools = @{ Python = 'python' }
-$cfgPath = Join-Path $PSScriptRoot 'config\keys.ps1'
+$cfgPath = Join-Path $ScriptRoot 'config\keys.ps1'
 if ($Keyless) { Write-Warning 'Keyless run (-Keyless): config\keys.ps1 ignored.' }
 elseif (Test-Path $cfgPath) { . $cfgPath }
 else { Write-Warning 'No config\keys.ps1 - running keyless. Copy keys.example.ps1 -> keys.ps1 to add keys.' }
@@ -1130,7 +1138,7 @@ function Phase6-Js {
     if (Test-Path (Join-Path $pkg '08_tech\cpes.txt')) { foreach ($cp in (Get-Content (Join-Path $pkg '08_tech\cpes.txt') -ErrorAction SilentlyContinue)) { if ($cp) { $techOut.Add(('{0,-22} (InternetDB CPE)' -f $cp)) } } }
     # Wappalyzer-style passive fingerprint: match the bundled MIT ruleset (config\wappalyzer.json) against the body
     # corpus. Zero new requests - reads only the bodies waymore already pulled. Broadens beyond the curated $techSig.
-    $wappaFile = Join-Path $PSScriptRoot 'config\wappalyzer.json'
+    $wappaFile = Join-Path $ScriptRoot 'config\wappalyzer.json'
     if ((Test-Path $wappaFile) -and $corpus.Length -gt 200) {
         $corpusStr = $corpus.ToString()
         $wappa = $null; try { $wappa = Get-Content $wappaFile -Raw | ConvertFrom-Json } catch { Write-Log "wappalyzer.json parse failed: $($_.Exception.Message)" 'WARN' }
