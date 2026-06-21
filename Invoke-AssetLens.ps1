@@ -52,6 +52,19 @@ if (-not $ScriptRoot -and $MyInvocation.MyCommand.Path) { $ScriptRoot = Split-Pa
 if (-not $ScriptRoot) { $ScriptRoot = (Get-Location).Path }
 if (-not $OutRoot) { $OutRoot = Join-Path $ScriptRoot 'output' }
 
+# make AssetLens's own tools findable for THIS session even if their install dirs were never added to PATH
+# (Go bin / Python Scripts / npm). Session-only edits to $env:Path, so this is safe under Constrained Language Mode.
+function Add-ToolPathsToSession {
+    $dirs = @((Join-Path $env:USERPROFILE 'go\bin'), (Join-Path $env:APPDATA 'npm'))
+    foreach ($root in @((Join-Path $env:LOCALAPPDATA 'Programs\Python'), (Join-Path $env:APPDATA 'Python'))) {
+        if (Test-Path $root) {
+            foreach ($p in (Get-ChildItem $root -Directory -Filter 'Python*' -ErrorAction SilentlyContinue)) { $dirs += (Join-Path $p.FullName 'Scripts') }
+        }
+    }
+    foreach ($d in $dirs) { if ($d -and (Test-Path $d) -and (";$env:Path;" -notlike "*;$d;*")) { $env:Path += ";$d" } }
+}
+Add-ToolPathsToSession
+
 # ================================================================ SETUP mode
 function Invoke-Setup {
     param([switch]$SkipBase)
@@ -84,7 +97,12 @@ function Invoke-Setup {
         if (-not (Has node))   { WG 'OpenJS.NodeJS' }
         if (-not (Has git))    { WG 'Git.Git' }
         if (-not (Has jq))     { WG 'jqlang.jq' }
-        Write-Host 'If Go/Python were just installed, RESTART this shell, then run:  .\Invoke-AssetLens.ps1 -Setup -SkipBase' -ForegroundColor Yellow
+        # refresh PATH from the registry so runtimes winget just installed are visible THIS session - no restart.
+        # (PowerShell's registry provider expands REG_EXPAND_SZ, so these come back as real, usable paths.)
+        $mp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path -ErrorAction SilentlyContinue).Path
+        $up = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
+        if ($mp -or $up) { $env:Path = ((@($mp, $up) | Where-Object { $_ }) -join ';') }
+        Write-Host '  PATH refreshed (no shell restart needed)' -ForegroundColor DarkGray
     }
     $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest')
     $gobin = $null
@@ -100,9 +118,12 @@ function Invoke-Setup {
     Install-GhBinary 'trufflesecurity/trufflehog' 'trufflehog' $binDest '(?i)windows.*(amd64|x64).*\.(tar\.gz|zip)$'
     if (Has python) {
         Write-Host 'Python tools (waymore, uro)...' -ForegroundColor Cyan
-        python -m pip install --quiet --upgrade waymore uro
+        python -m pip install --upgrade waymore uro
+        if ($LASTEXITCODE -eq 0) { Write-Host '  waymore + uro OK' -ForegroundColor Green }
+        else { Write-Host '  waymore/uro install FAILED - see output above (fix: python -m pip install -U pip setuptools wheel, then re-run -Setup -SkipBase)' -ForegroundColor Yellow }
     } else { Write-Host 'python missing - skipping waymore/uro' -ForegroundColor Yellow }
     if (Has npm) { Write-Host 'Node tools (retire.js)...' -ForegroundColor Cyan; npm install -g retire | Out-Null }
+    Add-ToolPathsToSession   # make go\bin / Python Scripts / npm visible for the check below + this session
     Write-Host ''
     Write-Host 'Tool check:' -ForegroundColor Cyan
     foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {

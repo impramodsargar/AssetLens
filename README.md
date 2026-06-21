@@ -186,7 +186,30 @@ The target is **one host**. Everything else the tools surface - SANs, subdomains
 - **Tech fingerprints:** `config\wappalyzer.json` is a slimmed, MIT-licensed Wappalyzer ruleset (via ProjectDiscovery `wappalyzergo`; see `config\wappalyzer.LICENSE`) - body-matchable patterns only, matched **passively** against archived bodies. Header/JS-only technologies (Shopify, Next.js) are invisible this way by design.
 - **Do not** point a hosted online scanner at the target - it is active-by-proxy and leaks the asset.
 - **Extending:** each phase is a `PhaseN-*` function in `Invoke-AssetLens.ps1`. Add a source by writing into the matching `0N_` folder and calling `Add-OOS` for anything off-host.
-- `-Setup` adds Go's `%GOPATH%\bin` tools; if `subfinder` etc. read MISSING after install, add that dir to PATH and restart the shell.
+- `-Setup` installs Go tools to `%GOPATH%\bin`, Python tools to Python's `Scripts`, and retire.js to npm's global dir. AssetLens **adds these to PATH automatically at runtime**, so a normal run finds its tools even if they were never added to the system PATH.
+
+## Troubleshooting
+
+**"running scripts is disabled on this system"** - that is PowerShell's ExecutionPolicy, not AssetLens. Set it once for your user:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+or bypass per run (no system change):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 <host>
+```
+On a managed machine run `Get-ExecutionPolicy -List`: if the blocking scope is `MachinePolicy` or `UserPolicy` it is enforced by Group Policy and the above are overridden - involve IT or use an unmanaged machine.
+
+**A tool reads `MISSING` right after `-Setup`** - winget-installed runtimes need PATH refreshed. `-Setup` now refreshes PATH in-session automatically; if anything is still missing, open a new shell and run `.\Invoke-AssetLens.ps1 -Setup -SkipBase`, then `.\Invoke-AssetLens.ps1 -Validate`.
+
+**`waymore` / `uro` MISSING** - they install via pip into Python's `Scripts` folder, which AssetLens auto-adds at runtime, so this is usually a non-issue. If they truly failed to install (common on a brand-new Python):
+```powershell
+python -m pip install -U pip setuptools wheel
+python -m pip install --upgrade waymore uro
+```
+Still failing on a bleeding-edge Python (e.g. 3.14)? Install Python 3.12 (`winget install Python.Python.3.12`) - it has prebuilt wheels for every dependency.
+
+**Locked-down corporate laptop** - check `$ExecutionContext.SessionState.LanguageMode`. If it is `ConstrainedLanguage`, .NET one-liners like `[Environment]::SetEnvironmentVariable(...)` will fail - but AssetLens itself is Constrained-Language-Mode safe and never needs them.
 
 ---
 
