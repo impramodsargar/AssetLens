@@ -52,16 +52,37 @@ if (-not $ScriptRoot -and $MyInvocation.MyCommand.Path) { $ScriptRoot = Split-Pa
 if (-not $ScriptRoot) { $ScriptRoot = (Get-Location).Path }
 if (-not $OutRoot) { $OutRoot = Join-Path $ScriptRoot 'output' }
 
-# make AssetLens's own tools findable for THIS session even if their install dirs were never added to PATH
-# (Go bin / Python Scripts / npm). Session-only edits to $env:Path, so this is safe under Constrained Language Mode.
+# detect REAL Python, not "command not found" and not the DEAD Microsoft Store python.exe stub. The size/path of the
+# file is NOT a reliable signal - a working Store python is reached through the same 0-byte WindowsApps alias as the
+# dead stub. The only reliable test across python.org / winget / Microsoft Store is to run it: a real interpreter
+# prints "Python X.Y", the dead stub prints nothing.
+function Test-RealPython {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $false }
+    try { $v = (& python --version 2>&1 | Out-String); return ($v -match 'Python\s+\d+\.\d+') } catch { return $false }
+}
+# make AssetLens's own tools findable for THIS session even if their install dirs were never added to PATH (Go bin /
+# Python Scripts / npm). Session-only edits to $env:Path -> safe under Constrained Language Mode.
 function Add-ToolPathsToSession {
-    $dirs = @((Join-Path $env:USERPROFILE 'go\bin'), (Join-Path $env:APPDATA 'npm'))
+    $pre = New-Object System.Collections.Generic.List[string]
+    # literal python install dirs first (handles a python.org / winget python that isn't on PATH yet, e.g. mid-setup)
     foreach ($root in @((Join-Path $env:LOCALAPPDATA 'Programs\Python'), (Join-Path $env:APPDATA 'Python'))) {
         if (Test-Path $root) {
-            foreach ($p in (Get-ChildItem $root -Directory -Filter 'Python*' -ErrorAction SilentlyContinue)) { $dirs += (Join-Path $p.FullName 'Scripts') }
+            foreach ($p in (Get-ChildItem $root -Directory -Filter 'Python*' -ErrorAction SilentlyContinue)) {
+                $pre.Add($p.FullName); $pre.Add((Join-Path $p.FullName 'Scripts'))
+            }
         }
     }
-    foreach ($d in $dirs) { if ($d -and (Test-Path $d) -and (";$env:Path;" -notlike "*;$d;*")) { $env:Path += ";$d" } }
+    foreach ($d in $pre) { if ($d -and (Test-Path $d) -and (";$env:Path;" -notlike "*;$d;*")) { $env:Path = "$d;$env:Path" } }
+    # then ask a REAL python (incl. Microsoft Store python) for its exact script dirs - the authoritative source
+    if (Test-RealPython) {
+        try {
+            $out = & python -c "import sysconfig;print(sysconfig.get_path('scripts'));print(sysconfig.get_path('scripts','nt_user'))" 2>$null
+            foreach ($l in @($out)) { $d = "$l".Trim(); if ($d -and (Test-Path $d) -and (";$env:Path;" -notlike "*;$d;*")) { $env:Path = "$d;$env:Path" } }
+        } catch {}
+    }
+    foreach ($d in @((Join-Path $env:USERPROFILE 'go\bin'), (Join-Path $env:APPDATA 'npm'))) {
+        if ((Test-Path $d) -and (";$env:Path;" -notlike "*;$d;*")) { $env:Path += ";$d" }
+    }
 }
 Add-ToolPathsToSession
 
@@ -93,7 +114,7 @@ function Invoke-Setup {
         if (-not (Has winget)) { Write-Host 'winget not found - install "App Installer" from the Microsoft Store, then re-run.' -ForegroundColor Red; return }
         Write-Host 'Base runtimes...' -ForegroundColor Cyan
         if (-not (Has go))     { WG 'GoLang.Go' }
-        if (-not (Has python)) { WG 'Python.Python.3.12' }
+        if (-not (Test-RealPython)) { WG 'Python.Python.3.12' }   # ignores the Store stub - install real Python if absent
         if (-not (Has node))   { WG 'OpenJS.NodeJS' }
         if (-not (Has git))    { WG 'Git.Git' }
         if (-not (Has jq))     { WG 'jqlang.jq' }
@@ -103,6 +124,7 @@ function Invoke-Setup {
         $up = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
         if ($mp -or $up) { $env:Path = ((@($mp, $up) | Where-Object { $_ }) -join ';') }
         Write-Host '  PATH refreshed (no shell restart needed)' -ForegroundColor DarkGray
+        Add-ToolPathsToSession   # prepend the freshly-installed real Python over any Store stub for the steps below
     }
     $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest')
     $gobin = $null
@@ -116,12 +138,12 @@ function Invoke-Setup {
     Write-Host 'Prebuilt binaries (gitleaks / trufflehog)...' -ForegroundColor Cyan
     Install-GhBinary 'gitleaks/gitleaks'          'gitleaks'   $binDest '(?i)windows.*(x64|amd64).*\.zip$'
     Install-GhBinary 'trufflesecurity/trufflehog' 'trufflehog' $binDest '(?i)windows.*(amd64|x64).*\.(tar\.gz|zip)$'
-    if (Has python) {
+    if (Test-RealPython) {
         Write-Host 'Python tools (waymore, uro)...' -ForegroundColor Cyan
         python -m pip install --upgrade waymore uro
         if ($LASTEXITCODE -eq 0) { Write-Host '  waymore + uro OK' -ForegroundColor Green }
         else { Write-Host '  waymore/uro install FAILED - see output above (fix: python -m pip install -U pip setuptools wheel, then re-run -Setup -SkipBase)' -ForegroundColor Yellow }
-    } else { Write-Host 'python missing - skipping waymore/uro' -ForegroundColor Yellow }
+    } else { Write-Host 'No real Python found (only the Microsoft Store stub?) - skipping waymore/uro. Install Python 3.12 (winget install Python.Python.3.12) or disable the python App Execution Alias, then re-run -Setup -SkipBase.' -ForegroundColor Yellow }
     if (Has npm) { Write-Host 'Node tools (retire.js)...' -ForegroundColor Cyan; npm install -g retire | Out-Null }
     Add-ToolPathsToSession   # make go\bin / Python Scripts / npm visible for the check below + this session
     Write-Host ''
@@ -644,7 +666,8 @@ function Invoke-Validate {
 
     Write-Host "`nTools:" -ForegroundColor Cyan
     foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
-        if (Get-Command $t -ErrorAction SilentlyContinue) { Vline $t 'OK' 'Green' } else { Vline $t 'missing' 'DarkGray' }
+        $ok = if ($t -eq 'python') { Test-RealPython } else { [bool](Get-Command $t -ErrorAction SilentlyContinue) }
+        if ($ok) { Vline $t 'OK' 'Green' } else { Vline $t $(if ($t -eq 'python') { 'missing / Store stub' } else { 'missing' }) 'DarkGray' }
     }
     Write-Host "`nKeyless sources:" -ForegroundColor Cyan
     foreach ($pr in @(@('Shodan-InternetDB', 'https://internetdb.shodan.io/8.8.8.8'), @('crt.sh', 'https://crt.sh/?q=example.com&output=json'), @('RDAP', 'https://rdap.org/domain/example.com'), @('Tranco', 'https://tranco-list.eu/api/ranks/domain/google.com'), @('LeakCheck', 'https://leakcheck.io/api/public?check=test@example.com'), @('M365 / Azure AD', 'https://login.microsoftonline.com/common/userrealm/user@example.com?api-version=1.0'))) {
