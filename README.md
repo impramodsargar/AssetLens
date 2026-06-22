@@ -212,7 +212,3 @@ Still failing on a bleeding-edge Python (e.g. 3.14)? Install Python 3.12 (`winge
 **Locked-down corporate laptop** - check `$ExecutionContext.SessionState.LanguageMode`. If it is `ConstrainedLanguage`, .NET one-liners like `[Environment]::SetEnvironmentVariable(...)` will fail - but AssetLens itself is Constrained-Language-Mode safe and never needs them.
 
 ---
-
-<p align="center">
-  Passive collection only. Nothing in <code>OOS_observed.txt</code> is in scope to test.
-</p>
