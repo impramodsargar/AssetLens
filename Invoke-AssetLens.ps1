@@ -784,6 +784,15 @@ function Get-EndpointsFromText {
     foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
     foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
 }
+function Get-ActiveHosts {
+    # active-probe scope = the target host + its www/non-www counterpart (same site). Safe default; other
+    # subdomains the passive layer found stay OUT of active traffic unless explicitly authorized.
+    $h = $Target.ToLower()
+    $set = New-Object System.Collections.Generic.HashSet[string]
+    [void]$set.Add($h)
+    if ($h -like 'www.*') { [void]$set.Add($h.Substring(4)) } else { [void]$set.Add("www.$h") }
+    return $set
+}
 function Get-Apex {
     # registrable domain (naive PSL: handles common 2-label public suffixes)
     param($h)
@@ -1405,16 +1414,18 @@ function Phase8-Live {
     $histDir = Join-Path $pkg '05_history'
     $jsDir   = Join-Path $pkg '06_js'
     $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
-    # candidate set = discovered URLs (P5) + JS endpoints (P6), restricted to the EXACT authorized host, deduped.
-    # active mode is host-STRICT (not apex-wide like the passive filter): we only ever touch $Target itself.
-    $hostL = $Target.ToLower()
+    # candidate set = deduped in-scope URLs (P5) + JS endpoints (P6), scoped to the target + its www/non-www
+    # counterpart (same site). Off-apex stays OOS; other subdomains need explicit authorization. Uses the uro-deduped
+    # set so we don't hammer the target with every query-string variant.
+    $allowed = Get-ActiveHosts
+    $urlSrc = if (Test-Path (Join-Path $histDir 'urls_deduped.txt')) { Join-Path $histDir 'urls_deduped.txt' } else { Join-Path $histDir 'all_urls.txt' }
     $cands = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($src in @((Join-Path $histDir 'all_urls.txt'), (Join-Path $jsDir 'endpoints.txt'), (Join-Path $jsDir 'api_spec_endpoints.txt'))) {
+    foreach ($src in @($urlSrc, (Join-Path $jsDir 'endpoints.txt'), (Join-Path $jsDir 'api_spec_endpoints.txt'))) {
         if (-not (Test-Path $src)) { continue }
         foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) {
             $e = "$e".Trim(); if (-not $e) { continue }
-            if ($e -match '^https?://') { $eh = ''; try { $eh = ([uri]$e).Host.ToLower() } catch {}; if ($eh -eq $hostL) { [void]$cands.Add($e) } }
-            elseif ($e.StartsWith('/')) { [void]$cands.Add("https://$Target$e") }
+            if ($e -match '^https?://') { $eh = ''; try { $eh = ([uri]$e).Host.ToLower() } catch {}; if ($allowed.Contains($eh)) { [void]$cands.Add($e) } }
+            elseif ($e.StartsWith('/')) { foreach ($h in $allowed) { [void]$cands.Add("https://$h$e") } }
         }
     }
     if ($cands.Count -eq 0) { Write-Log 'no in-scope candidates to probe' 'INFO'; return }
@@ -1454,17 +1465,15 @@ function Phase8-LiveJs {
     Write-Log 'P8  live JS fetch + extraction (ACTIVE - authorized target only)'
     $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
     $ljDir = Join-Path $liveDir 'js'; New-Item -ItemType Directory -Force -Path $ljDir | Out-Null
-    # in-scope .js URLs discovered anywhere (P5 js list, P6 endpoints, live URLs), host-strict, deduped
-    $hostL = $Target.ToLower()
+    # in-scope .js URLs (P5 js list, P6 endpoints, live URLs), scoped to the target + its www/non-www counterpart
+    $allowed = Get-ActiveHosts
     $js = New-Object System.Collections.Generic.HashSet[string]
     foreach ($src in @((Join-Path $pkg '05_history\js_urls.txt'), (Join-Path $pkg '06_js\endpoints.txt'), (Join-Path $liveDir 'live_urls.txt'))) {
         if (-not (Test-Path $src)) { continue }
         foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) {
-            $e = "$e".Trim(); if (-not $e) { continue }
-            $u = if ($e -match '^https?://') { $e } elseif ($e.StartsWith('/')) { "https://$Target$e" } else { '' }
-            if (-not $u -or $u -notmatch '\.js($|\?)') { continue }
-            $uh = ''; try { $uh = ([uri]$u).Host.ToLower() } catch {}
-            if ($uh -eq $hostL) { [void]$js.Add($u) }
+            $e = "$e".Trim(); if (-not $e -or $e -notmatch '\.js($|\?)') { continue }
+            if ($e -match '^https?://') { $eh = ''; try { $eh = ([uri]$e).Host.ToLower() } catch {}; if ($allowed.Contains($eh)) { [void]$js.Add($e) } }
+            elseif ($e.StartsWith('/')) { foreach ($h in $allowed) { [void]$js.Add("https://$h$e") } }
         }
     }
     if ($js.Count -eq 0) { Write-Log 'no in-scope live JS candidates' 'INFO'; return }
