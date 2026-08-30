@@ -147,6 +147,7 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 - Probes the union of discovered OSINT URLs + endpoints extracted from JS, **restricted to the exact target host** (never off-host / OOS).
 - Keeps `2xx / 3xx / 401 / 403` ("exists", including auth-gated), drops `404/410`/dead.
 - Writes the live URLs to `09_live\live_urls.txt` (full URLs) and `09_live\live_uris.txt` (paths) - ready to import into your own coverage-compare tool (e.g. Burp sitemap vs RDL), which keeps that data wherever it needs to stay.
+- **Live JS analysis:** fetches the `.js` the target currently serves and re-extracts endpoints + secrets from the *current* code (not just archived) - `09_live\live_js_endpoints.txt` plus `trufflehog`/`gitleaks`/`retire.js` on the live bundles. Optional: put `jsluice` on PATH for AST-based extraction (it needs a C toolchain, so it is not auto-installed).
 
 **DoS-safe by design:** one request per unique URL (no fuzzing), rate-limited (`-Rate`, default 15/s - set it to your RoE limit), capped concurrency, short timeout, minimal retries, no redirect-chasing. Drop `-Rate` low for fragile or WAF-fronted targets.
 
@@ -161,7 +162,7 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 | **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
 | **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
-| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs (OSINT + JS), keeps 2xx/3xx/401/403 -> `09_live\live_urls.txt` + `live_uris.txt` for coverage compare. Opt-in; authorization required | active |
+| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs -> `09_live\live_urls.txt`/`live_uris.txt`; **fetches live JS** and re-extracts endpoints + `trufflehog`/`gitleaks`/`retire.js` on the current code -> `live_js_*`. Opt-in; authorization required | active |
 
 > Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
 
@@ -177,7 +178,8 @@ output/<host>_<date>/
   manifest.sha256  <- integrity / chain-of-custody
   recon.log
   01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
-  09_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (the coverage-compare handoff)
+  09_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (coverage-compare handoff),
+                      js/ (fetched live JS) + live_js_endpoints.txt + live_js_{trufflehog,gitleaks,retire}.json
 ```
 
 ### Packaging
