@@ -32,13 +32,14 @@
 
 **AssetLens** is a PowerShell-native passive reconnaissance collector for a **single internet-facing host**. It gathers everything from third-party sources - without sending a single packet to the target - and produces a self-contained report (plain text / JSON, readable with nothing but a text editor) plus a ranked worklist of suggested next checks.
 
-> **The rule:** PASSIVE = zero packets to the target host. Every artifact comes from third parties that already scanned it: certificate transparency, internet-scan DBs, web archives, RDAP, OSINT APIs.
+> **The rule:** by default, PASSIVE = zero packets to the target host - every artifact comes from third parties that already scanned it (certificate transparency, internet-scan DBs, web archives, RDAP, OSINT APIs). The **only** exception is the opt-in **`-Probe`** flag (off by default), which actively liveness-checks discovered URLs and therefore requires authorization for the target.
 
 ## Features
 
 - **Zero-touch passive** - all data from third-party sources; the target never sees you
 - **Single-host discipline** - every off-host asset is auto-tagged `OUT OF SCOPE, DO NOT TEST` and kept out of the active worklist
-- **Seven phases** - scope/ownership, certs, internet-scan, origin-behind-CDN, history, JS mining, OSINT
+- **Seven passive phases** - scope/ownership, certs, internet-scan, origin-behind-CDN, history, JS mining, OSINT
+- **Opt-in active liveness (`-Probe`)** - `httpx`-probes discovered URLs on *authorized* targets and exports the live ones, DoS-safe by design
 - **Keyed or keyless** - a keyless HTTP core runs with zero config; free keys only widen coverage
 - **Microsoft 365 / Azure AD** tenant mapping - tenant ID, Managed vs Federated, ADFS/IdP URL, tenant domains
 - **Passive tech fingerprinting** - a bundled Wappalyzer ruleset matched against archived bodies (no live request)
@@ -53,7 +54,7 @@
 git clone https://github.com/impramodsargar/AssetLens.git
 cd AssetLens
 
-# 1. install the toolchain (subfinder, gau, waymore, uro, retire.js, trufflehog, gitleaks)
+# 1. install the toolchain (subfinder, gau, httpx, waymore, uro, retire.js, trufflehog, gitleaks)
 .\Invoke-AssetLens.ps1 -Setup
 # if Go / Python were just installed, restart the shell, then:
 .\Invoke-AssetLens.ps1 -Setup -SkipBase
@@ -94,7 +95,7 @@ notepad .\config\keys.ps1
 ## Usage
 
 ```powershell
-.\Invoke-AssetLens.ps1 <host> [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-UatBase https://uat..]
+.\Invoke-AssetLens.ps1 <host> [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..]
 ```
 
 | Command | What it does |
@@ -134,8 +135,20 @@ Output lands in `output\app.target.com_<date>\`, auto-zipped with a `.zip.sha256
 | `-HttpOnly` | Skip every external CLI tool; run only the HTTP core (keyless + keyed APIs) |
 | `-Keyless` | Ignore `config\keys.ps1`; run only the no-key sources. Default (no flag) uses your keys for the widest coverage. |
 | `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** - single-host scope. Only for wildcard / multi-host targets. |
+| `-Probe` | **ACTIVE liveness probe** (opt-in, off by default) of discovered in-scope URLs via `httpx`. Sends traffic to the target - **only where you are authorized.** Writes live URLs to `09_live\`. |
+| `-Rate <n>` | With `-Probe`: max requests/sec to the target (default 15). Set to your Rules-of-Engagement limit. |
 
 The chosen mode is recorded in `Index.md`.
+
+## Active liveness probe (`-Probe`)
+
+By default AssetLens never touches the target. `-Probe` turns on an **opt-in active phase** for engagements where you are **authorized** to send traffic:
+
+- Probes the union of discovered OSINT URLs + endpoints extracted from JS, **restricted to the exact target host** (never off-host / OOS).
+- Keeps `2xx / 3xx / 401 / 403` ("exists", including auth-gated), drops `404/410`/dead.
+- Writes the live URLs to `09_live\live_urls.txt` (full URLs) and `09_live\live_uris.txt` (paths) - ready to import into your own coverage-compare tool (e.g. Burp sitemap vs RDL), which keeps that data wherever it needs to stay.
+
+**DoS-safe by design:** one request per unique URL (no fuzzing), rate-limited (`-Rate`, default 15/s - set it to your RoE limit), capped concurrency, short timeout, minimal retries, no redirect-chasing. Drop `-Rate` low for fragile or WAF-fronted targets.
 
 ## What it collects
 
@@ -148,6 +161,7 @@ The chosen mode is recorded in `Index.md`.
 | **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
 | **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps**/**API-specs** + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
+| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs (OSINT + JS), keeps 2xx/3xx/401/403 -> `09_live\live_urls.txt` + `live_uris.txt` for coverage compare. Opt-in; authorization required | active |
 
 > Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
 
@@ -163,6 +177,7 @@ output/<host>_<date>/
   manifest.sha256  <- integrity / chain-of-custody
   recon.log
   01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
+  09_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (the coverage-compare handoff)
 ```
 
 ### Packaging
