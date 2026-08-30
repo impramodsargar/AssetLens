@@ -796,6 +796,42 @@ function Get-EndpointsFromText {
     foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
     foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
 }
+function Get-JsluiceApiMap {
+    # jsluice parses each JS file's AST and emits one record per call site: url + method + query/body params.
+    # It repeats a URL across several records (e.g. a fetch() carrying the method plus a bare string literal),
+    # so fold everything by URL - union the methods and params - into a deduped, testable API map.
+    # Returns @{ urls = <HashSet of distinct URLs>; lines = <'METHOD  /path  [q: ..] [b: ..]' list>; withMethod; count }.
+    # Shared by P6 (archived bodies) and P8 live-JS so jsluice is used to its full extent in both lanes.
+    param([string]$JsluicePath, [string[]]$Files)
+    $urls = New-Object System.Collections.Generic.HashSet[string]
+    $api  = @{}
+    # jsluice takes a file list (not a directory), and Windows caps a command line at ~32KB - hundreds of archived
+    # bodies would overflow argv and the process launch fails. Batch the files so each invocation stays well under.
+    $batch = 80
+    for ($i = 0; $i -lt $Files.Count; $i += $batch) {
+        $chunk = @($Files[$i..([Math]::Min($i + $batch - 1, $Files.Count - 1))])
+        $out = Invoke-Tool $JsluicePath (@('urls') + $chunk) -TimeoutSec 600
+        if (-not $out) { continue }
+        foreach ($ln in $out) {
+            $j = $null; try { $j = $ln | ConvertFrom-Json } catch {}; if (-not $j -or -not $j.url) { continue }
+            $u = [string]$j.url; [void]$urls.Add($u)
+            if (-not $api.ContainsKey($u)) { $api[$u] = @{ m = (New-Object System.Collections.Generic.HashSet[string]); q = (New-Object System.Collections.Generic.HashSet[string]); b = (New-Object System.Collections.Generic.HashSet[string]) } }
+            if ($j.method) { [void]$api[$u].m.Add([string]$j.method) }
+            foreach ($qp in @($j.queryParams)) { if ($qp) { [void]$api[$u].q.Add([string]$qp) } }
+            foreach ($bp in @($j.bodyParams))  { if ($bp) { [void]$api[$u].b.Add([string]$bp) } }
+        }
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($u in ($api.Keys | Sort-Object)) {
+        $m = if ($api[$u].m.Count) { (@($api[$u].m) | Sort-Object) -join '/' } else { 'GET' }
+        $line = '{0,-10} {1}' -f $m, $u
+        if ($api[$u].q.Count) { $line += '  [q: ' + ((@($api[$u].q) | Sort-Object) -join ', ') + ']' }
+        if ($api[$u].b.Count) { $line += '  [b: ' + ((@($api[$u].b) | Sort-Object) -join ', ') + ']' }
+        [void]$lines.Add($line)
+    }
+    $withMethod = @($api.Keys | Where-Object { $api[$_].m.Count }).Count
+    return @{ urls = $urls; lines = $lines; withMethod = $withMethod; count = $api.Count }
+}
 function Get-ActiveHosts {
     # active-probe scope = the target host + its www/non-www counterpart (same site). Safe default; other
     # subdomains the passive layer found stay OUT of active traffic unless explicitly authorized.
@@ -1212,6 +1248,23 @@ function Phase6-Js {
     Save-Lines (Join-Path $jsDir 'params.txt')    (@($prm)   | Sort-Object)
     Save-Lines (Join-Path $jsDir 'wordlist.txt')  (@($words) | Sort-Object)
     Write-Log ('extracted {0} endpoints | {1} params | {2} wordlist | {3} cloud assets from {4} bodies' -f $links.Count, $prm.Count, $words.Count, $cloud.Count, $cnt) 'OK'
+    # jsluice AST pass over the same archived bodies: recovers URLs the regex can't (built from string concatenation)
+    # and a method + query/body param API map. Folds its URLs into endpoints.txt; writes the map to 06_js\js_api.txt.
+    $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
+    if ($jsl) {
+        # jsluice's AST parse cost is O(size); archived corpora hold multi-MB minified bundles that each cost ~100s
+        # for little unique gain (the regex above already mined them). Cap jsluice's feed at 350KB - keeps the
+        # app-sized JS where the method/param signal lives, skips the expensive minified tail (~9s vs many minutes).
+        $capKB = 350
+        $jsBodies = @($bodyFiles | Where-Object { $_.Length -le ($capKB * 1KB) })
+        $skipped = $bodyFiles.Count - $jsBodies.Count
+        $map = Get-JsluiceApiMap $jsl @($jsBodies.FullName)
+        $delta = @($map.urls | Where-Object { -not $links.Contains($_) }).Count
+        foreach ($u in $map.urls) { [void]$links.Add($u) }
+        Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)   # re-save endpoints.txt as the regex + jsluice union
+        if ($map.lines.Count) { Save-Lines (Join-Path $jsDir 'js_api.txt') $map.lines }
+        Write-Log ('jsluice (AST): {0}/{1} bodies (skipped {2} >{3}KB) -> {4} url(s) (+{5} beyond regex) | API map {6} url(s) ({7} with method) -> 06_js\js_api.txt' -f $jsBodies.Count, $bodyFiles.Count, $skipped, $capKB, $map.urls.Count, $delta, $map.count, $map.withMethod) 'OK'
+    }
     # tech fingerprint: body signatures + URL extensions + InternetDB CPEs -> 08_tech\fingerprint.txt
     $extHints = [ordered]@{ '.aspx' = 'ASP.NET'; '.asmx' = 'ASP.NET web service'; '.axd' = 'ASP.NET'; '.ashx' = 'ASP.NET handler'; '.jsp' = 'Java/JSP'; '.jspx' = 'Java/JSP'; '.do' = 'Java (Struts/Spring)'; '.action' = 'Java Struts'; '.php' = 'PHP'; '.cfm' = 'ColdFusion'; '.vue' = 'Vue.js' }
     $extsF = @(); if (Test-Path (Join-Path $pkg '05_history\extensions.txt')) { $extsF = @(Get-Content (Join-Path $pkg '05_history\extensions.txt') -ErrorAction SilentlyContinue) }
@@ -1503,16 +1556,15 @@ function Phase8-LiveJs {
     foreach ($u in $rx) { [void]$all.Add($u) }
     $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
     if ($jsl) {
-        # jsluice parses the JS (AST) so it follows string concatenation the regex can't - recovers extra URLs
-        $jset = New-Object System.Collections.Generic.HashSet[string]
-        $o = Invoke-Tool $jsl (@('urls') + @($bodies.FullName)) -TimeoutSec 600
-        if ($o) { foreach ($ln in $o) { try { $ju = ($ln | ConvertFrom-Json).url; if ($ju) { [void]$jset.Add([string]$ju) } } catch {} } }
-        foreach ($u in $jset) { [void]$all.Add($u) }
-        $added = @($jset | Where-Object { -not $rx.Contains($_) } | Sort-Object)
+        # jsluice AST-parses the JS: recovers URLs the regex misses AND the method + query/body params per call.
+        $map = Get-JsluiceApiMap $jsl @($bodies.FullName)
+        foreach ($u in $map.urls) { [void]$all.Add($u) }
+        $added = @($map.urls | Where-Object { -not $rx.Contains($_) } | Sort-Object)
         Save-Lines (Join-Path $liveDir 'live_js_jsluice_added.txt') $added
+        Save-Lines (Join-Path $liveDir 'live_js_api.txt') $map.lines            # METHOD + params per endpoint (the AST payoff)
         $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
         if ($s) { Save-Lines (Join-Path $liveDir 'live_js_jsluice_secrets.json') $s }
-        Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} (delta -> live_js_jsluice_added.txt)" -f $bodies.Count, $rx.Count, $jset.Count, $added.Count, $all.Count) 'OK'
+        Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} | API map {5} urls ({6} with method) -> live_js_api.txt" -f $bodies.Count, $rx.Count, $map.urls.Count, $added.Count, $all.Count, $map.count, $map.withMethod) 'OK'
     } else {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
