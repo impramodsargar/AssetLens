@@ -1480,7 +1480,7 @@ function Phase8-Live {
     if (-not $hx) { Write-Log 'ProjectDiscovery httpx not found in Go bin -> skip probe (run -Setup)' 'WARN'; return }
     $histDir = Join-Path $pkg '05_history'
     $jsDir   = Join-Path $pkg '06_js'
-    $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
+    $liveDir = Join-Path $pkg '08_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
     # candidate set = deduped in-scope URLs (P5) + JS endpoints (P6), scoped to the target + its www/non-www
     # counterpart (same site). Off-apex stays OOS; other subdomains need explicit authorization. Uses the uro-deduped
     # set so we don't hammer the target with every query-string variant.
@@ -1521,7 +1521,7 @@ function Phase8-Live {
     Save-Lines (Join-Path $liveDir 'live_urls.txt') $liveSorted
     Save-Lines (Join-Path $liveDir 'live_uris.txt') (@($liveUris) | Sort-Object -Unique)
     Save-Lines (Join-Path $liveDir 'live.jsonl') $rows
-    Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 09_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
+    Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 08_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
 }
 
 # ================================================================ P8 live JS (ACTIVE - opt-in via -Probe)
@@ -1530,7 +1530,7 @@ function Phase8-LiveJs {
     $hx = Get-HttpxPath
     if (-not $hx) { return }
     Write-Log 'P8  live JS fetch + extraction (ACTIVE - authorized target only)'
-    $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
+    $liveDir = Join-Path $pkg '08_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
     $ljDir = Join-Path $liveDir 'js'; New-Item -ItemType Directory -Force -Path $ljDir | Out-Null
     # in-scope .js URLs (P5 js list, P6 endpoints, live URLs), scoped to the target + its www/non-www counterpart
     $allowed = Get-ActiveHosts
@@ -1570,7 +1570,7 @@ function Phase8-LiveJs {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
     Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
-    # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies); raw JSON -> 09_live\_raw\
+    # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies); raw JSON -> 08_live\_raw\
     $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_trufflehog.json')) $t }
     Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Get-RawPath (Join-Path $liveDir 'live_js_gitleaks.json'))) | Out-Null
     Invoke-Tool 'retire' @('--path', $ljDir, '--outputformat', 'json', '--outputpath', (Get-RawPath (Join-Path $liveDir 'live_js_retire.json'))) | Out-Null
