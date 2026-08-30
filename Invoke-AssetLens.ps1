@@ -1474,19 +1474,28 @@ function Phase8-LiveJs {
     Invoke-Tool $hx @('-l', $jsList, '-sr', '-srd', $ljDir, '-mc', '200', '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '15', '-retries', '1') -TimeoutSec 1200 | Out-Null
     $bodies = @(Get-ChildItem $ljDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne '_urls.txt' -and $_.Name -ne 'index.txt' })
     if ($bodies.Count -eq 0) { Write-Log 'no live JS fetched (none returned 200)' 'WARN'; return }
-    # endpoints from the LIVE code (same extractor P6 uses on archived bodies)
-    $links = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $links } }
-    # optional AST pass: jsluice understands string concatenation, so it recovers URLs the regex misses (best-effort)
+    # endpoints from the LIVE code: regex baseline (always) + optional jsluice AST pass, kept separate so the two
+    # are directly comparable in one scan (regex-only vs what jsluice adds on top).
+    $rx = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $rx } }
+    $all = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($u in $rx) { [void]$all.Add($u) }
     $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
     if ($jsl) {
+        # jsluice parses the JS (AST) so it follows string concatenation the regex can't - recovers extra URLs
+        $jset = New-Object System.Collections.Generic.HashSet[string]
         $o = Invoke-Tool $jsl (@('urls') + @($bodies.FullName)) -TimeoutSec 600
-        if ($o) { foreach ($ln in $o) { try { $ju = ($ln | ConvertFrom-Json).url; if ($ju) { [void]$links.Add([string]$ju) } } catch {} } }
+        if ($o) { foreach ($ln in $o) { try { $ju = ($ln | ConvertFrom-Json).url; if ($ju) { [void]$jset.Add([string]$ju) } } catch {} } }
+        foreach ($u in $jset) { [void]$all.Add($u) }
+        $added = @($jset | Where-Object { -not $rx.Contains($_) } | Sort-Object)
+        Save-Lines (Join-Path $liveDir 'live_js_jsluice_added.txt') $added
         $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
         if ($s) { Save-Lines (Join-Path $liveDir 'live_js_jsluice_secrets.json') $s }
+        Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} (delta -> live_js_jsluice_added.txt)" -f $bodies.Count, $rx.Count, $jset.Count, $added.Count, $all.Count) 'OK'
+    } else {
+        Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
-    Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($links) | Sort-Object)
-    Write-Log ("live JS: {0} file(s) -> {1} endpoints ({2}) -> 09_live\live_js_endpoints.txt" -f $bodies.Count, $links.Count, $(if ($jsl) { 'regex + jsluice' } else { 'regex' })) 'OK'
+    Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
     # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies)
     $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Join-Path $liveDir 'live_js_trufflehog.json') $t }
     Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Join-Path $liveDir 'live_js_gitleaks.json')) | Out-Null
