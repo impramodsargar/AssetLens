@@ -777,6 +777,13 @@ function Get-HttpxPath {
     $p = Join-Path $dir 'httpx.exe'
     if (Test-Path $p) { return $p } else { return $null }
 }
+function Get-EndpointsFromText {
+    # extract absolute URLs + quoted site-relative paths from a blob of text (JS/HTML/JSON) into $sink (a HashSet).
+    # shared by P6 (archived bodies) and P8 live-JS so both use the identical, proven extraction.
+    param([string]$c, $sink)
+    foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
+    foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
+}
 function Get-Apex {
     # registrable domain (naive PSL: handles common 2-label public suffixes)
     param($h)
@@ -1142,8 +1149,7 @@ function Phase6-Js {
         $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $c) { continue }
         if ($corpus.Length -lt 3000000) { $seg = $(if ($c.Length -gt 80000) { $c.Substring(0, 80000) } else { $c }); [void]$corpus.Append($seg).Append("`n") }
-        foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$links.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
-        foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$links.Add($m.Groups[1].Value) }
+        Get-EndpointsFromText $c $links
         foreach ($tk in $techSig.Keys) { if ($c -match $techSig[$tk]) { $techHits[$tk] = [int]$techHits[$tk] + 1 } }
         if ($c -match '"version"\s*:\s*3' -and $c -match '"sources"\s*:\s*\[') { try { $sm = $c | ConvertFrom-Json; foreach ($s in $sm.sources) { if ($s) { [void]$smSrc.Add([string]$s) } } } catch {} }
         foreach ($m in [regex]::Matches($c, '(?://[#@]\s*sourceMappingURL=)([^\s''"]+)')) {
@@ -1440,6 +1446,53 @@ function Phase8-Live {
     Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 09_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
 }
 
+# ================================================================ P8 live JS (ACTIVE - opt-in via -Probe)
+function Phase8-LiveJs {
+    if (-not $Probe) { return }
+    $hx = Get-HttpxPath
+    if (-not $hx) { return }
+    Write-Log 'P8  live JS fetch + extraction (ACTIVE - authorized target only)'
+    $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
+    $ljDir = Join-Path $liveDir 'js'; New-Item -ItemType Directory -Force -Path $ljDir | Out-Null
+    # in-scope .js URLs discovered anywhere (P5 js list, P6 endpoints, live URLs), host-strict, deduped
+    $hostL = $Target.ToLower()
+    $js = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($src in @((Join-Path $pkg '05_history\js_urls.txt'), (Join-Path $pkg '06_js\endpoints.txt'), (Join-Path $liveDir 'live_urls.txt'))) {
+        if (-not (Test-Path $src)) { continue }
+        foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) {
+            $e = "$e".Trim(); if (-not $e) { continue }
+            $u = if ($e -match '^https?://') { $e } elseif ($e.StartsWith('/')) { "https://$Target$e" } else { '' }
+            if (-not $u -or $u -notmatch '\.js($|\?)') { continue }
+            $uh = ''; try { $uh = ([uri]$u).Host.ToLower() } catch {}
+            if ($uh -eq $hostL) { [void]$js.Add($u) }
+        }
+    }
+    if ($js.Count -eq 0) { Write-Log 'no in-scope live JS candidates' 'INFO'; return }
+    $jsList = Join-Path $ljDir '_urls.txt'; Save-Lines $jsList (@($js) | Sort-Object)
+    Write-Log ("fetching {0} live JS file(s) at <={1} req/s..." -f $js.Count, $Rate) 'INFO'
+    # httpx -sr stores the (200-only) response bodies; same DoS-safe rate/timeout as the liveness probe
+    Invoke-Tool $hx @('-l', $jsList, '-sr', '-srd', $ljDir, '-mc', '200', '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '15', '-retries', '1') -TimeoutSec 1200 | Out-Null
+    $bodies = @(Get-ChildItem $ljDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne '_urls.txt' -and $_.Name -ne 'index.txt' })
+    if ($bodies.Count -eq 0) { Write-Log 'no live JS fetched (none returned 200)' 'WARN'; return }
+    # endpoints from the LIVE code (same extractor P6 uses on archived bodies)
+    $links = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $links } }
+    # optional AST pass: jsluice understands string concatenation, so it recovers URLs the regex misses (best-effort)
+    $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
+    if ($jsl) {
+        $o = Invoke-Tool $jsl (@('urls') + @($bodies.FullName)) -TimeoutSec 600
+        if ($o) { foreach ($ln in $o) { try { $ju = ($ln | ConvertFrom-Json).url; if ($ju) { [void]$links.Add([string]$ju) } } catch {} } }
+        $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
+        if ($s) { Save-Lines (Join-Path $liveDir 'live_js_jsluice_secrets.json') $s }
+    }
+    Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($links) | Sort-Object)
+    Write-Log ("live JS: {0} file(s) -> {1} endpoints ({2}) -> 09_live\live_js_endpoints.txt" -f $bodies.Count, $links.Count, $(if ($jsl) { 'regex + jsluice' } else { 'regex' })) 'OK'
+    # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies)
+    $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Join-Path $liveDir 'live_js_trufflehog.json') $t }
+    Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Join-Path $liveDir 'live_js_gitleaks.json')) | Out-Null
+    Invoke-Tool 'retire' @('--path', $ljDir, '--outputformat', 'json', '--outputpath', (Join-Path $liveDir 'live_js_retire.json')) | Out-Null
+}
+
 # ---------------------------------------------------------------- main
 Write-Host ''
 Write-Log ("AssetLens  target=$Target  mode=" + $(if ($Strict) { 'strict' } else { 'pragmatic' }) + '  profile=' + $(if ($KeyedRun) { 'keyed' } else { 'keyless' }) + $(if ($HttpOnly) { '  (http-only)' } else { '' }) + $(if ($Probe) { '  +ACTIVE-probe' } else { '' }))
@@ -1453,7 +1506,8 @@ $steps = @(
     { Phase5-History },
     { Phase6-Js },
     { Phase7-Osint  $ip },
-    { Phase8-Live }
+    { Phase8-Live },
+    { Phase8-LiveJs }
 )
 foreach ($s in $steps) { try { & $s } catch { Write-Log "phase failed: $($_.Exception.Message)" 'WARN' } }
 
