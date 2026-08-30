@@ -5,8 +5,8 @@
     Active verification is out of scope (this is a passive collector).
 
 .DESCRIPTION
-    Seven modes (keys live in config\keys.ps1, git-ignored - never in this script):
-      RECON  (default)  .\Invoke-AssetLens.ps1 app.target.com [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-UatBase https://uat..]
+    Modes (keys live in config\keys.ps1, git-ignored - never in this script):
+      RECON  (default)  .\Invoke-AssetLens.ps1 app.target.com [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..]
                         (auto-zips the finished package + .zip.sha256; raw response bodies excluded - add -FullBodies to keep them)
       SETUP             .\Invoke-AssetLens.ps1 -Setup [-SkipBase]
       REPORT (rebuild)  .\Invoke-AssetLens.ps1 -Report -Package .\output\app.target.com_<date>
@@ -14,6 +14,7 @@
       ZIP               .\Invoke-AssetLens.ps1 -Zip -Package .\output\app.target.com_<date> [-FullBodies]
       DIFF              .\Invoke-AssetLens.ps1 -Diff -Package .\output\<host>_<new> -Against .\output\<host>_<old>
       VALIDATE          .\Invoke-AssetLens.ps1 -Validate   (live-check API keys + tools; hits providers + benign IPs, no target)
+      RE-RUN PHASE(S)   .\Invoke-AssetLens.ps1 -Package .\output\<host>_<date> -Phase P8 [-Probe]   (re-run phase(s) on an existing package; no re-discovery)
 
     -Report / -MapUat / -Zip / -Diff are pure-local (no network/installs) - safe to run anywhere.
 #>
@@ -39,7 +40,8 @@ param(
     [string]$Against,                           # DIFF: the older/baseline package to compare against
     [switch]$Validate,                          # VALIDATE mode: live-check API keys + tools (no target)
     [switch]$Probe,                             # RECON: ACTIVE liveness probe of discovered in-scope URLs (needs authorization)
-    [int]$Rate = 15                             # -Probe: max requests/sec to the target (set to your Rules-of-Engagement limit)
+    [int]$Rate = 15,                            # -Probe: max requests/sec to the target (set to your Rules-of-Engagement limit)
+    [string]$Phase                              # run only these phases (e.g. -Phase P8 or -Phase P5,P6); with -Package, re-runs them on that existing package
 )
 
 $ErrorActionPreference = 'Continue'
@@ -699,7 +701,7 @@ if ($MapUat) { if (-not $Package -or -not $UatBase) { throw 'Use: -MapUat -Packa
 if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies; return }
 if ($Diff)   { if (-not $Package -or -not $Against) { throw 'Use: -Diff -Package <newDir> -Against <oldDir>' }; Invoke-Diff -New $Package -Old $Against; return }
 if ($Validate) { Invoke-Validate; return }
-if (-not $Target) { throw 'Provide a target host for RECON, or use -Setup / -Report / -MapUat / -Zip / -Diff / -Validate.' }
+if (-not $Target -and -not ($Phase -and $Package)) { throw 'Provide a target host for RECON, or use -Setup / -Report / -MapUat / -Zip / -Diff / -Validate.' }
 
 # ---------------------------------------------------------------- config
 # Default loads config\keys.ps1 (keyed run). -Keyless skips it - keyless sources only.
@@ -711,15 +713,25 @@ elseif (Test-Path $cfgPath) { . $cfgPath }
 else { Write-Warning 'No config\keys.ps1 - running keyless. Copy keys.example.ps1 -> keys.ps1 to add keys.' }
 $KeyedRun = @($Keys.Values | Where-Object { $_ }).Count -gt 0
 
+# ---------------------------------------------------------------- rerun on an existing package?  (-Phase + -Package)
+$RerunPkg = [bool]($Phase -and $Package)
+if ($RerunPkg) {
+    if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
+    $pkg = (Resolve-Path -LiteralPath $Package).Path
+    if (-not $Target) { $Target = ((Split-Path $pkg -Leaf) -replace '_\d{8}-\d{6}$', '') }   # derive host from <host>_<date>
+}
+
 # ---------------------------------------------------------------- normalise target
 $Target = ($Target -replace '^[a-z]+://', '' -replace '/.*$', '').Trim().TrimEnd('.').ToLower()
 if ($Target -notmatch '^[a-z0-9.-]+\.[a-z]{2,}$') { throw "Target does not look like a hostname: '$Target'" }
 
-# ---------------------------------------------------------------- package dirs
+# ---------------------------------------------------------------- package dirs (fresh run creates a new dir; a -Phase rerun uses the existing one)
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
-$pkg   = Join-Path $OutRoot ('{0}_{1}' -f $Target, (Get-Date -Format 'yyyyMMdd-HHmmss'))   # per-run dir - never clobber a same-day run
-foreach ($d in '', '01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech') {
-    New-Item -ItemType Directory -Force -Path (Join-Path $pkg $d) | Out-Null
+if (-not $RerunPkg) {
+    $pkg = Join-Path $OutRoot ('{0}_{1}' -f $Target, (Get-Date -Format 'yyyyMMdd-HHmmss'))   # per-run dir - never clobber a same-day run
+    foreach ($d in '', '01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech') {
+        New-Item -ItemType Directory -Force -Path (Join-Path $pkg $d) | Out-Null
+    }
 }
 $logPath = Join-Path $pkg 'recon.log'
 $utf8    = New-Object System.Text.UTF8Encoding($false)
@@ -1516,18 +1528,31 @@ Write-Host ''
 Write-Log ("AssetLens  target=$Target  mode=" + $(if ($Strict) { 'strict' } else { 'pragmatic' }) + '  profile=' + $(if ($KeyedRun) { 'keyed' } else { 'keyless' }) + $(if ($HttpOnly) { '  (http-only)' } else { '' }) + $(if ($Probe) { '  +ACTIVE-probe' } else { '' }))
 $ip = Get-TargetIP
 
-$steps = @(
-    { Phase1-Scope   $ip },
-    { Phase2-Certs },
-    { Phase3-Scan    $ip },
-    { Phase4-Origin  $ip },
-    { Phase5-History },
-    { Phase6-Js },
-    { Phase7-Osint  $ip },
-    { Phase8-Live },
-    { Phase8-LiveJs }
-)
-foreach ($s in $steps) { try { & $s } catch { Write-Log "phase failed: $($_.Exception.Message)" 'WARN' } }
+$phases = [ordered]@{
+    P1 = { Phase1-Scope   $ip }
+    P2 = { Phase2-Certs }
+    P3 = { Phase3-Scan    $ip }
+    P4 = { Phase4-Origin  $ip }
+    P5 = { Phase5-History }
+    P6 = { Phase6-Js }
+    P7 = { Phase7-Osint  $ip }
+    P8 = { Phase8-Live; Phase8-LiveJs }
+}
+$want = if ($Phase) { @($Phase.ToUpper() -split '[,\s]+' | Where-Object { $_ }) } else { @($phases.Keys) }
+$bad  = @($want | Where-Object { @($phases.Keys) -notcontains $_ })
+if ($bad.Count) { Write-Log ("unknown -Phase: {0}  (valid: {1})" -f ($bad -join ','), (@($phases.Keys) -join ',')) 'WARN' }
+if ($RerunPkg) { Write-Log ("re-run: phase(s) [{0}] on existing package {1}" -f ($want -join ','), (Split-Path $pkg -Leaf)) 'INFO' }
+foreach ($k in $phases.Keys) {
+    if ($want -notcontains $k) { continue }
+    try { & $phases[$k] } catch { Write-Log "phase $k failed: $($_.Exception.Message)" 'WARN' }
+}
+
+# -Phase rerun: rebuild the report from the updated package, then stop - don't clobber OOS/manifest/zip with a partial run
+if ($RerunPkg) {
+    try { Build-Report -Package $pkg | Out-Null; Write-Log 'report rebuilt -> Report.md' 'OK' } catch { Write-Log "report failed: $($_.Exception.Message)" 'WARN' }
+    Write-Log "re-run DONE  package: $pkg" 'OK'
+    return
+}
 
 Write-Index    $ip
 Write-Worklist $ip

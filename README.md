@@ -107,6 +107,7 @@ notepad .\config\keys.ps1
 | `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw bodies excluded by default |
 | `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new ports/CVEs/SANs/endpoints) |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
+| `.\Invoke-AssetLens.ps1 -Package <dir> -Phase P8 [-Probe]` | **re-run phase(s)** on an existing package - no re-discovery (`P1`..`P8`, comma-separated; e.g. `-Phase P5,P6`) |
 
 ## Running AssetLens
 
