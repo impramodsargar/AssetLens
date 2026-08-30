@@ -41,7 +41,7 @@ param(
     [switch]$Validate,                          # VALIDATE mode: live-check API keys + tools (no target)
     [switch]$Probe,                             # RECON: ACTIVE liveness probe of discovered in-scope URLs (needs authorization)
     [int]$Rate = 15,                            # -Probe: max requests/sec to the target (set to your Rules-of-Engagement limit)
-    [string]$Phase                              # run only these phases (e.g. -Phase P8 or -Phase P5,P6); with -Package, re-runs them on that existing package
+    [string[]]$Phase                            # run only these phases (e.g. -Phase P8 or -Phase P5,P6); accepts a native array or a comma/space string; with -Package, re-runs them on that existing package
 )
 
 $ErrorActionPreference = 'Continue'
@@ -1590,7 +1590,7 @@ $phases = [ordered]@{
     P7 = { Phase7-Osint  $ip }
     P8 = { Phase8-Live; Phase8-LiveJs }
 }
-$want = if ($Phase) { @($Phase.ToUpper() -split '[,\s]+' | Where-Object { $_ }) } else { @($phases.Keys) }
+$want = if ($Phase) { @(($Phase -join ',').ToUpper() -split '[,\s]+' | Where-Object { $_ }) } else { @($phases.Keys) }
 $bad  = @($want | Where-Object { @($phases.Keys) -notcontains $_ })
 if ($bad.Count) { Write-Log ("unknown -Phase: {0}  (valid: {1})" -f ($bad -join ','), (@($phases.Keys) -join ',')) 'WARN' }
 if ($RerunPkg) { Write-Log ("re-run: phase(s) [{0}] on existing package {1}" -f ($want -join ','), (Split-Path $pkg -Leaf)) 'INFO' }
