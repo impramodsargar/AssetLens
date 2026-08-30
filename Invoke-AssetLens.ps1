@@ -171,6 +171,8 @@ function Build-Report {
     function GJson { param($rel) $p = Pr $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
     function GLines{ param($rel) $p = Pr $rel; if (Test-Path $p) { return @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
     function Has   { param($rel) Test-Path (Pr $rel) }
+    # preview ordering for the jsluice API maps: float the highest-signal lines up - non-GET methods first, then param-bearing.
+    function ApiRank { param($lines) @($lines | Sort-Object @{ e = { if ($_ -match '^(POST|PUT|PATCH|DELETE)\b') { 0 } elseif ($_ -match '\[') { 1 } else { 2 } } }, @{ e = { $_ } }) }
     $out = New-Object System.Collections.Generic.List[string]
     function W { param($s = '') $out.Add([string]$s) }
 
@@ -208,6 +210,10 @@ function Build-Report {
     $smRef   = GLines '06_js\sourcemap_refs.txt'
     $apiEp   = GLines '06_js\api_spec_endpoints.txt'
     $apiRefs = GLines '06_js\api_spec_refs.txt'
+    $jsApi     = GLines '06_js\js_api.txt'          # jsluice archived method/param API map (METHOD /path [params])
+    $liveUrls  = GLines '08_live\live_urls.txt'     # P8 active outputs (present only on a -Probe run)
+    $liveApi   = GLines '08_live\live_js_api.txt'   # jsluice live method/param API map
+    $liveCands = GLines '08_live\candidates.txt'    # what was probed (resolves via _raw\)
     $nvd     = 'https://nvd.nist.gov/vuln/detail/'
     $geo     = GJson '01_scope\geo.json'
     $m365    = GJson '01_scope\m365.json'
@@ -257,7 +263,21 @@ function Build-Report {
     W ("- **{0} origin-candidate IP(s)** recovered {1}." -f @($cands).Count, $cdnNote)
     W ("- History: **{0} URLs** ({1} after uro dedup, {2} high-signal), **{3} param(s)**, **{4} JS file(s)**." -f @($allUrls).Count, @($dedupUrls).Count, $hotN, @($params).Count, @($jsUrls).Count)
     W ("- **{0} high-confidence secret(s)**{1}; **{2} org email(s)**; **{3} OOS asset(s)** observed." -f $secN, $(if (($thUnv.Count + $glGen.Count)) { ' (' + ($thUnv.Count + $glGen.Count) + ' low-confidence / likely-FP)' } else { '' }), @($emails).Count, @($oos).Count)
+    $hasLive = [bool](@($liveUrls).Count -or @($liveApi).Count -or @($liveCands).Count)
+    if ($hasLive) { W ("- **ACTIVE (-Probe):** {0} live URL(s) (2xx/3xx/401/403){1} -> coverage-compare feed in ``08_live\``." -f @($liveUrls).Count, $(if (@($liveApi).Count) { ", {0} JS API endpoint(s) mapped" -f @($liveApi).Count } else { '' })) }
     W ""
+    if ($hasLive) {
+        W "## Live / active surface  (-Probe)"
+        W ("httpx probed {0} in-scope URL(s) -> **{1} live** (2xx / 3xx / 401 / 403). Coverage-compare feed: ``08_live\live_urls.txt`` (full URLs) + ``live_uris.txt`` (paths)." -f @($liveCands).Count, @($liveUrls).Count)
+        if (@($liveApi).Count) {
+            W ""; W ("**Live JS API map** - {0} endpoint(s): HTTP method + query/body params read from the current code (``08_live\live_js_api.txt``):" -f @($liveApi).Count)
+            W '```'
+            foreach ($l in (ApiRank $liveApi | Select-Object -First 30)) { W $l }
+            if (@($liveApi).Count -gt 30) { W ("...+{0} more in 08_live\live_js_api.txt" -f (@($liveApi).Count - 30)) }
+            W '```'
+        }
+        W ""
+    }
     W "## 1. Exposed services"
     if ($ports.Count) {
         W "| Port | Service / version |"; W "|---|---|"
@@ -339,6 +359,13 @@ function Build-Report {
         if (@($apiEp).Count -gt 25) { W ("- _...+{0} more in 06_js\api_spec_endpoints.txt_" -f (@($apiEp).Count - 25)) }
     }
     if (@($apiRefs).Count) { W ""; W ("**{0} API-spec URL(s)** referenced - fetch live to recover the contract (06_js\api_spec_refs.txt)" -f @($apiRefs).Count) }
+    if (@($jsApi).Count) {
+        W ""; W ("**JS API map (jsluice - method + params): {0} endpoint(s)** from archived JS -> ``06_js\js_api.txt``:" -f @($jsApi).Count)
+        W '```'
+        foreach ($l in (ApiRank $jsApi | Select-Object -First 25)) { W $l }
+        if (@($jsApi).Count -gt 25) { W ("...+{0} more in 06_js\js_api.txt" -f (@($jsApi).Count - 25)) }
+        W '```'
+    }
     $uris = GLines '05_history\uris.txt'
     if (@($uris).Count) { W ""; W ("**{0} unique URIs** (paths across all observed hosts) -> ``05_history\uris.txt``. Replay onto a UAT/staging host (never crawled) with ``Invoke-AssetLens.ps1 -MapUat -Package . -UatBase <url>`` -> uat_targets.txt." -f @($uris).Count) }
     $exts = GLines '05_history\extensions.txt'
@@ -414,8 +441,8 @@ function Build-Report {
     HW 'details{margin:6px 0}summary{cursor:pointer;color:var(--info);font-size:12px;font-weight:500;list-style:none}summary::-webkit-details-marker{display:none}.files{display:flex;flex-wrap:wrap}.files a{margin:3px 14px 3px 0;font-size:13px}.flink{font-size:12px}'
     HW '</style></head><body><div class="wrap">'
     HW '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
-    HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; PASSIVE RECON</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)))
-    HW $(if ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
+    HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; {4}</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)), $(if ($hasLive) { 'ACTIVE PROBE' } else { 'PASSIVE RECON' }))
+    HW $(if ($hasLive) { '<span class="pill" style="background:var(--wn-bg);color:var(--wn)">active &middot; -Probe sent traffic</span>' } elseif ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
     HW '</div>'
     HW '<div class="tiles">'
     HW ('<div class="tile"><div class="l">ports</div><div class="n">{0}</div></div>' -f $ports.Count)
@@ -424,7 +451,19 @@ function Build-Report {
     HW ('<div class="tile"><div class="l">endpoints</div><div class="n">{0}</div></div>' -f $(if (Test-Path (P '06_js\endpoints.txt')) { FLink '06_js\endpoints.txt' @($xEnd).Count } else { @($xEnd).Count }))
     HW ('<div class="tile"><div class="l">live secrets</div><div class="n"{1}>{0}</div></div>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<div class="tile"><div class="l">out-of-scope</div><div class="n">{0}</div></div>' -f $oosClean.Count)
+    if ($hasLive) { HW ('<div class="tile"><div class="l">live URLs</div><div class="n" style="color:var(--ok)">{0}</div></div>' -f @($liveUrls).Count) }
     HW '</div>'
+    if ($hasLive) {
+        HW '<div class="card"><h2>live / active surface &middot; -Probe</h2>'
+        HW ('<div class="muted" style="font-size:13px">httpx probed <span style="color:var(--text);font-weight:500">{0}</span> in-scope URL(s) &rarr; <span style="color:var(--ok);font-weight:600">{1}</span> live (2xx/3xx/401/403) &middot; coverage-compare feed</div>' -f @($liveCands).Count, @($liveUrls).Count)
+        if (@($liveApi).Count) {
+            HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">live JS API endpoint(s) - HTTP method + params from the current code</span></div>' -f @($liveApi).Count)
+            HW '<div class="src mono" style="line-height:1.9">'; foreach ($l in (ApiRank $liveApi | Select-Object -First 10)) { HW ((HE $l) + '<br>') }; HW '</div>'
+            if (@($liveApi).Count -gt 10) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '08_live\live_js_api.txt' ('all ' + @($liveApi).Count + ' endpoints'))) }
+        }
+        HW ('<div class="flink muted" style="margin-top:8px">open: {0} &middot; {1}</div>' -f (FLink '08_live\live_urls.txt' 'live_urls'), (FLink '08_live\live_uris.txt' 'live_uris'))
+        HW '</div>'
+    }
     if ($geo -and $worldPath -and $geo.latitude -and $geo.longitude) {
         $mpx = [Math]::Round((([double]$geo.longitude) + 180) * 1000 / 360)
         $mpy = [Math]::Round((90 - ([double]$geo.latitude)) * 500 / 180)
@@ -514,14 +553,19 @@ function Build-Report {
         foreach ($c in $cShow) { $rtop = $(if ($cfirst) { ' style="border-top:none"' } else { '' }); $cfirst = $false; HW ('<div class="row mono"{0}><span style="font-size:13px">{1}</span></div>' -f $rtop, (HE $c)) }
         HW '</div>'
     }
-    if (@($apiEp).Count -or @($apiRefs).Count) {
-        HW '<div class="card"><h2>API spec</h2>'
+    if (@($apiEp).Count -or @($apiRefs).Count -or @($jsApi).Count) {
+        HW '<div class="card"><h2>API surface</h2>'
         if (@($apiEp).Count) {
             HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">endpoint(s) recovered from an archived OpenAPI/Swagger spec - the full contract</span></div>' -f @($apiEp).Count)
             HW '<div class="src" style="line-height:1.9">'; foreach ($e in (@($apiEp) | Select-Object -First 12)) { HW ((HE $e) + '<br>') }; HW '</div>'
             if (@($apiEp).Count -gt 12) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\api_spec_endpoints.txt' ('all ' + @($apiEp).Count + ' endpoints'))) }
         }
         if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) -> {1} - fetch live</div>' -f @($apiRefs).Count, (FLink '06_js\api_spec_refs.txt' 'api_spec_refs.txt')) }
+        if (@($jsApi).Count) {
+            HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">endpoint(s) from archived JS (jsluice) - HTTP method + params</span></div>' -f @($jsApi).Count)
+            HW '<div class="src mono" style="line-height:1.9">'; foreach ($e in (ApiRank $jsApi | Select-Object -First 10)) { HW ((HE $e) + '<br>') }; HW '</div>'
+            if (@($jsApi).Count -gt 10) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\js_api.txt' ('all ' + @($jsApi).Count + ' endpoints'))) }
+        }
         HW '</div>'
     }
     HW '<div class="card"><h2>attack surface</h2>'

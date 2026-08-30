@@ -171,7 +171,8 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 
 ```
 output/<host>_<date>/
-  Report.md        <- synthesized brief: services / CVEs / origins / attack-surface / secrets / OSINT  (READ FIRST)
+  Report.md        <- synthesized brief: services / CVEs / origins / attack-surface / JS API map / secrets / OSINT
+                      + a Live/active-surface section when -Probe ran  (READ FIRST)
   Report.html      <- same, self-contained dashboard: metric tiles + host-location map + detail cards
   Index.md         <- passive-only attestation + mode + key status
   Verify.md        <- ranked worklist of suggested next checks
