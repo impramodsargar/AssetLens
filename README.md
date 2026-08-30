@@ -181,8 +181,12 @@ output/<host>_<date>/
   01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
   09_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (coverage-compare handoff),
                       js/ (fetched live JS) + live_js_endpoints.txt + live_js_api.txt (jsluice method/param map)
-                      + live_js_{trufflehog,gitleaks,retire}.json
 ```
+
+Each phase folder shows only its **readable outputs** (`.txt` endpoints/params/URLs, fingerprints). The raw
+per-source API responses and scanner JSON (RDAP, VirusTotal, Censys, Shodan, GitHub, trufflehog, gitleaks,
+retire.js, raw `httpx` output, ...) are tucked into a **`_raw\`** subfolder in each phase - present for
+chain-of-custody and deeper digging, out of the way when you just want the findings.
 
 ### Packaging
 

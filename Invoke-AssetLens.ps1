@@ -166,9 +166,11 @@ function Build-Report {
     if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
     $u8 = New-Object System.Text.UTF8Encoding($false)
     function P     { param($rel) Join-Path $Package $rel }
-    function GJson { param($rel) $p = P $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
-    function GLines{ param($rel) $p = P $rel; if (Test-Path $p) { return @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
-    function Has   { param($rel) Test-Path (P $rel) }
+    # resolve for READING: prefer the _raw\ copy (raw dumps moved there), fall back to the phase root (txt outputs + old packages).
+    function Pr    { param($rel) $p = P $rel; $r = Join-Path (Join-Path (Split-Path $p -Parent) '_raw') (Split-Path $p -Leaf); if (Test-Path $r) { $r } else { $p } }
+    function GJson { param($rel) $p = Pr $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
+    function GLines{ param($rel) $p = Pr $rel; if (Test-Path $p) { return @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
+    function Has   { param($rel) Test-Path (Pr $rel) }
     $out = New-Object System.Collections.Generic.List[string]
     function W { param($s = '') $out.Add([string]$s) }
 
@@ -341,7 +343,7 @@ function Build-Report {
     if (@($uris).Count) { W ""; W ("**{0} unique URIs** (paths across all observed hosts) -> ``05_history\uris.txt``. Replay onto a UAT/staging host (never crawled) with ``Invoke-AssetLens.ps1 -MapUat -Package . -UatBase <url>`` -> uat_targets.txt." -f @($uris).Count) }
     $exts = GLines '05_history\extensions.txt'
     if (@($exts).Count) {
-        W ""; W "**File types** (count / ext - full grouping in 05_history\urls_by_ext.txt):"; W ""
+        W ""; W "**File types** (count / ext - grep 05_history\all_urls.txt by extension for the full list):"; W ""
         foreach ($e in (@($exts) | Select-Object -First 20)) { W ("- ``{0}``" -f $e.Trim()) }
         $sens = @($exts | Where-Object { $_ -match '(?i)\.(config|bak|sql|sqlite|db|env|zip|gz|tgz|7z|rar|tar|pem|key|p12|pfx|old|swp|orig|wsdl|asmx|svc|yml|yaml|ini|conf|log|csv|xls|xlsx|git)$' })
         if ($sens.Count) { W ""; W "**Worth a look** (sensitive/interesting extensions present):"; foreach ($s in ($sens | Select-Object -First 20)) { W ("- ``{0}``" -f $s.Trim()) } }
@@ -746,7 +748,9 @@ function Write-Log {
 }
 function Save-Text  { param($Path, $Text)  [System.IO.File]::WriteAllText($Path, [string]$Text, $utf8) }
 function Save-Lines { param($Path, $Lines) [System.IO.File]::WriteAllLines($Path, [string[]]@($Lines), $utf8) }
-function Save-Json  { param($Path, $Obj)   Save-Text $Path ($Obj | ConvertTo-Json -Depth 12) }
+# raw API/scanner dumps live in a per-phase _raw\ subfolder so each phase folder shows only the readable outputs.
+function Get-RawPath { param($Path) $d = Join-Path (Split-Path $Path -Parent) '_raw'; New-Item -ItemType Directory -Force -Path $d | Out-Null; Join-Path $d (Split-Path $Path -Leaf) }
+function Save-Json  { param($Path, $Obj)   Save-Text (Get-RawPath $Path) ($Obj | ConvertTo-Json -Depth 12) }
 
 function Invoke-Json {
     param([string]$Url, [hashtable]$Headers = @{}, [int]$TimeoutSec = 30, [int]$Retries = 2)
@@ -1105,7 +1109,7 @@ function Phase5-History {
     # contribution is passive-DNS in P4 (/resolutions). -l caps RESPONSES saved, not the URL list (-oU is full).
     $respDir = Join-Path $pkg '06_js\responses'
     New-Item -ItemType Directory -Force -Path $respDir | Out-Null
-    $wmUrls = Join-Path $pkg '05_history\waymore_urls.txt'
+    $wmUrls = Get-RawPath (Join-Path $pkg '05_history\waymore_urls.txt')
     Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'B', '--providers', 'wayback,commoncrawl,otx,urlscan,ghostarchive', '-oU', $wmUrls, '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
     if (Test-Path $wmUrls) { foreach ($u in (Get-Content $wmUrls -ErrorAction SilentlyContinue)) { if ($u) { [void]$urls.Add([string]$u) } } }
     Write-Log ('URL collection: gau + waymore (mode B, +GhostArchive) -> {0} raw URL(s)' -f $urls.Count) 'OK'
@@ -1156,9 +1160,6 @@ function Phase5-History {
         $extMap[$ext].Add([string]$u)
     }
     Save-Lines (Join-Path $pkg '05_history\extensions.txt') (@($extMap.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | ForEach-Object { '{0,7}  {1}' -f $_.Value.Count, $_.Key }))
-    $byExt = New-Object System.Collections.Generic.List[string]
-    foreach ($e in ($extMap.Keys | Sort-Object)) { $byExt.Add("# ===== $e ($($extMap[$e].Count)) ====="); foreach ($x in ($extMap[$e] | Sort-Object)) { $byExt.Add($x) }; $byExt.Add('') }
-    Save-Lines (Join-Path $pkg '05_history\urls_by_ext.txt') $byExt
     Write-Log ('urls {0} | params {1} | js {2} | ext-types {3}' -f $all.Count, $params.Count, $js.Count, $extMap.Count) 'OK'
 }
 
@@ -1309,12 +1310,13 @@ function Phase6-Js {
     if ($apiEp.Count)   { Save-Lines (Join-Path $jsDir 'api_spec_endpoints.txt') (@($apiEp) | Sort-Object -Unique) }
     if ($apiRefs.Count) { Save-Lines (Join-Path $jsDir 'api_spec_refs.txt') $apiRefs }
     Write-Log ('tech: {0} signals | source maps: {1} paths / {2} refs | API spec: {3} endpoints from {4} spec(s), {5} spec-URL leads' -f $techOut.Count, $smSrc.Count, $smRef.Count, $apiEp.Count, $apiSpecN, $apiRefs.Count) 'OK'
-    # secret scanners on the downloaded bodies
-    $t = Invoke-Tool 'trufflehog' @('filesystem', $respDir, '--no-update', '--json'); if ($t) { Save-Lines (Join-Path $jsDir 'trufflehog.json') $t }
-    Invoke-Tool 'gitleaks' @('detect', '--source', $respDir, '--no-git', '-r', (Join-Path $jsDir 'gitleaks.json')) | Out-Null
+    # secret scanners on the downloaded bodies (raw JSON -> 06_js\_raw\)
+    $t = Invoke-Tool 'trufflehog' @('filesystem', $respDir, '--no-update', '--json'); if ($t) { Save-Lines (Get-RawPath (Join-Path $jsDir 'trufflehog.json')) $t }
+    Invoke-Tool 'gitleaks' @('detect', '--source', $respDir, '--no-git', '-r', (Get-RawPath (Join-Path $jsDir 'gitleaks.json'))) | Out-Null
     # retire.js: flag known-vulnerable JS libraries in the archived responses
-    Invoke-Tool 'retire' @('--path', $respDir, '--outputformat', 'json', '--outputpath', (Join-Path $jsDir 'retirejs.json')) | Out-Null
-    if (Test-Path (Join-Path $jsDir 'retirejs.json')) { Write-Log 'retire.js -> 06_js\retirejs.json' 'OK' }
+    $rjPath = Get-RawPath (Join-Path $jsDir 'retirejs.json')
+    Invoke-Tool 'retire' @('--path', $respDir, '--outputformat', 'json', '--outputpath', $rjPath) | Out-Null
+    if (Test-Path $rjPath) { Write-Log 'retire.js -> 06_js\_raw\retirejs.json' 'OK' }
 }
 
 function Phase7-Osint {
@@ -1460,10 +1462,10 @@ Active steps only. Run where you are authorized to test. Read Report.md first.
    - host: $Target ($IP)
    - origin candidates (does origin answer directly, bypassing any WAF?): $origins
 2. Confirm the exposed ports are open: $ports
-   - cross-check 08_tech\internetdb_vulns.txt + 06_js\retirejs.json against the live versions.
+   - cross-check 08_tech\internetdb_vulns.txt + 06_js\_raw\retirejs.json against the live versions.
 3. Replay prod URIs on UAT: Invoke-AssetLens.ps1 -MapUat -Package . -UatBase https://<uat> -> uat_targets.txt, then httpx/nuclei.
-4. Load 05_history\uris.txt + 06_js\wordlist.txt + params.txt into Burp Intruder (payload sets); katana to crawl. Scan 05_history\urls_by_ext.txt for sensitive file types.
-5. Validate secrets in 06_js (trufflehog.json / gitleaks.json).
+4. Load 05_history\uris.txt + 06_js\wordlist.txt + params.txt into Burp Intruder (payload sets); katana to crawl. Scan 05_history\all_urls.txt by extension for sensitive file types.
+5. Validate secrets in 06_js\_raw (trufflehog.json / gitleaks.json).
 6. Review 02_certs\sans.txt for in-scope alternate names of the same app.
 
 Reminder: nothing in OOS_observed.txt is in scope. Do not test it.
@@ -1494,10 +1496,10 @@ function Phase8-Live {
         }
     }
     if ($cands.Count -eq 0) { Write-Log 'no in-scope candidates to probe' 'INFO'; return }
-    $candFile = Join-Path $liveDir 'candidates.txt'
+    $candFile = Get-RawPath (Join-Path $liveDir 'candidates.txt')   # probe input list -> _raw\ (intermediate)
     Save-Lines $candFile (@($cands) | Sort-Object)
     # httpx: one request per unique URL, rate-limited, no redirect-follow (a 3xx already means "exists"). DoS-safe.
-    $jsonl = Join-Path $liveDir 'httpx.jsonl'
+    $jsonl = Get-RawPath (Join-Path $liveDir 'httpx.jsonl')   # raw httpx output -> _raw\ (live.jsonl is the readable handoff)
     Remove-Item $jsonl -Force -ErrorAction SilentlyContinue
     Write-Log ("probing {0} in-scope URLs at <={1} req/s (single GET each, no redirect-follow)..." -f $cands.Count, $Rate) 'INFO'
     # -duc = disable httpx's startup update-check (it phones GitHub and HANGS on egress-restricted hosts like a VDI)
@@ -1559,20 +1561,19 @@ function Phase8-LiveJs {
         # jsluice AST-parses the JS: recovers URLs the regex misses AND the method + query/body params per call.
         $map = Get-JsluiceApiMap $jsl @($bodies.FullName)
         foreach ($u in $map.urls) { [void]$all.Add($u) }
-        $added = @($map.urls | Where-Object { -not $rx.Contains($_) } | Sort-Object)
-        Save-Lines (Join-Path $liveDir 'live_js_jsluice_added.txt') $added
+        $added = @($map.urls | Where-Object { -not $rx.Contains($_) }).Count   # how many jsluice found beyond the regex (logged)
         Save-Lines (Join-Path $liveDir 'live_js_api.txt') $map.lines            # METHOD + params per endpoint (the AST payoff)
         $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
-        if ($s) { Save-Lines (Join-Path $liveDir 'live_js_jsluice_secrets.json') $s }
-        Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} | API map {5} urls ({6} with method) -> live_js_api.txt" -f $bodies.Count, $rx.Count, $map.urls.Count, $added.Count, $all.Count, $map.count, $map.withMethod) 'OK'
+        if ($s) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_jsluice_secrets.json')) $s }
+        Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} | API map {5} urls ({6} with method) -> live_js_api.txt" -f $bodies.Count, $rx.Count, $map.urls.Count, $added, $all.Count, $map.count, $map.withMethod) 'OK'
     } else {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
     Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
-    # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies)
-    $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Join-Path $liveDir 'live_js_trufflehog.json') $t }
-    Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Join-Path $liveDir 'live_js_gitleaks.json')) | Out-Null
-    Invoke-Tool 'retire' @('--path', $ljDir, '--outputformat', 'json', '--outputpath', (Join-Path $liveDir 'live_js_retire.json')) | Out-Null
+    # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies); raw JSON -> 09_live\_raw\
+    $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_trufflehog.json')) $t }
+    Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Get-RawPath (Join-Path $liveDir 'live_js_gitleaks.json'))) | Out-Null
+    Invoke-Tool 'retire' @('--path', $ljDir, '--outputformat', 'json', '--outputpath', (Get-RawPath (Join-Path $liveDir 'live_js_retire.json'))) | Out-Null
 }
 
 # ---------------------------------------------------------------- main
