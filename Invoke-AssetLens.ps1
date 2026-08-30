@@ -37,7 +37,9 @@ param(
     [switch]$FullBodies,                        # ZIP: also include the raw 06_js\responses\ bodies (default: excluded - already mined)
     [switch]$Diff,                              # DIFF mode: compare -Package (new) against -Against (old)
     [string]$Against,                           # DIFF: the older/baseline package to compare against
-    [switch]$Validate                           # VALIDATE mode: live-check API keys + tools (no target)
+    [switch]$Validate,                          # VALIDATE mode: live-check API keys + tools (no target)
+    [switch]$Probe,                             # RECON: ACTIVE liveness probe of discovered in-scope URLs (needs authorization)
+    [int]$Rate = 15                             # -Probe: max requests/sec to the target (set to your Rules-of-Engagement limit)
 )
 
 $ErrorActionPreference = 'Continue'
@@ -126,7 +128,7 @@ function Invoke-Setup {
         Write-Host '  PATH refreshed (no shell restart needed)' -ForegroundColor DarkGray
         Add-ToolPathsToSession   # prepend the freshly-installed real Python over any Store stub for the steps below
     }
-    $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest')
+    $goMods = @('github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest', 'github.com/lc/gau/v2/cmd/gau@latest', 'github.com/projectdiscovery/httpx/cmd/httpx@latest')
     $gobin = $null
     if (Has go) {
         Write-Host 'Go tools...' -ForegroundColor Cyan
@@ -148,8 +150,8 @@ function Invoke-Setup {
     Add-ToolPathsToSession   # make go\bin / Python Scripts / npm visible for the check below + this session
     Write-Host ''
     Write-Host 'Tool check:' -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
-        $ok = (Has $t) -or ($binDest -and (Test-Path (Join-Path $binDest "$t.exe")))
+    foreach ($t in 'subfinder', 'gau', 'httpx', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
+        $ok = if ($t -eq 'httpx') { [bool](Get-HttpxPath) } else { (Has $t) -or ($binDest -and (Test-Path (Join-Path $binDest "$t.exe"))) }
         Write-Host ('  {0,-14} {1}' -f $t, $(if ($ok) { 'OK' } else { 'MISSING' })) -ForegroundColor $(if ($ok) { 'Green' } else { 'DarkGray' })
     }
     Write-Host ''
@@ -665,8 +667,8 @@ function Invoke-Validate {
     function Show { param($name, $present, $res, $detail = '') if (-not $present) { Vline $name 'not set' 'DarkGray' } elseif ($res.ok) { Vline $name 'VALID' 'Green' $detail } else { Vline $name ("FAIL ({0})" -f $res.code) 'Red' } }
 
     Write-Host "`nTools:" -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
-        $ok = if ($t -eq 'python') { Test-RealPython } else { [bool](Get-Command $t -ErrorAction SilentlyContinue) }
+    foreach ($t in 'subfinder', 'gau', 'httpx', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
+        $ok = if ($t -eq 'python') { Test-RealPython } elseif ($t -eq 'httpx') { [bool](Get-HttpxPath) } else { [bool](Get-Command $t -ErrorAction SilentlyContinue) }
         if ($ok) { Vline $t 'OK' 'Green' } else { Vline $t $(if ($t -eq 'python') { 'missing / Store stub' } else { 'missing' }) 'DarkGray' }
     }
     Write-Host "`nKeyless sources:" -ForegroundColor Cyan
@@ -764,6 +766,16 @@ function Invoke-Tool {
     Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue
     Write-Log "$Exe timed out (${TimeoutSec}s) - killed, continuing" 'WARN'
     return $null
+}
+function Get-HttpxPath {
+    # ProjectDiscovery httpx by FULL PATH. The Python 'httpx' package (pulled in by waymore/uro) installs a same-named
+    # httpx.exe that hijacks a bare 'httpx' on PATH and doesn't understand -l/-json/-rl. go install puts the real
+    # prober in GOBIN, else GOPATH\bin, else ~\go\bin.
+    $dir = ''
+    try { $dir = (& go env GOBIN 2>$null) } catch {}
+    if (-not $dir) { $gp = ''; try { $gp = (& go env GOPATH 2>$null) } catch {}; if (-not $gp) { $gp = Join-Path $env:USERPROFILE 'go' }; $dir = Join-Path $gp 'bin' }
+    $p = Join-Path $dir 'httpx.exe'
+    if (Test-Path $p) { return $p } else { return $null }
 }
 function Get-Apex {
     # registrable domain (naive PSL: handles common 2-label public suffixes)
@@ -1378,9 +1390,59 @@ Reminder: nothing in OOS_observed.txt is in scope. Do not test it.
 "@
 }
 
+# ================================================================ P8 liveness (ACTIVE - opt-in via -Probe)
+function Phase8-Live {
+    if (-not $Probe) { return }   # active target contact is opt-in and requires authorization for the target
+    Write-Log 'P8  liveness probe (ACTIVE - authorized target only)'
+    $hx = Get-HttpxPath
+    if (-not $hx) { Write-Log 'ProjectDiscovery httpx not found in Go bin -> skip probe (run -Setup)' 'WARN'; return }
+    $histDir = Join-Path $pkg '05_history'
+    $jsDir   = Join-Path $pkg '06_js'
+    $liveDir = Join-Path $pkg '09_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
+    # candidate set = discovered URLs (P5) + JS endpoints (P6), restricted to the EXACT authorized host, deduped.
+    # active mode is host-STRICT (not apex-wide like the passive filter): we only ever touch $Target itself.
+    $hostL = $Target.ToLower()
+    $cands = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($src in @((Join-Path $histDir 'all_urls.txt'), (Join-Path $jsDir 'endpoints.txt'), (Join-Path $jsDir 'api_spec_endpoints.txt'))) {
+        if (-not (Test-Path $src)) { continue }
+        foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) {
+            $e = "$e".Trim(); if (-not $e) { continue }
+            if ($e -match '^https?://') { $eh = ''; try { $eh = ([uri]$e).Host.ToLower() } catch {}; if ($eh -eq $hostL) { [void]$cands.Add($e) } }
+            elseif ($e.StartsWith('/')) { [void]$cands.Add("https://$Target$e") }
+        }
+    }
+    if ($cands.Count -eq 0) { Write-Log 'no in-scope candidates to probe' 'INFO'; return }
+    $candFile = Join-Path $liveDir 'candidates.txt'
+    Save-Lines $candFile (@($cands) | Sort-Object)
+    # httpx: one request per unique URL, rate-limited, no redirect-follow (a 3xx already means "exists"). DoS-safe.
+    $jsonl = Join-Path $liveDir 'httpx.jsonl'
+    Remove-Item $jsonl -Force -ErrorAction SilentlyContinue
+    Write-Log ("probing {0} in-scope URLs at <={1} req/s (single GET each, no redirect-follow)..." -f $cands.Count, $Rate) 'INFO'
+    # -duc = disable httpx's startup update-check (it phones GitHub and HANGS on egress-restricted hosts like a VDI)
+    Invoke-Tool $hx @('-l', $candFile, '-json', '-o', $jsonl, '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '10', '-retries', '1') -TimeoutSec 1200 | Out-Null
+    if (-not (Test-Path $jsonl)) { Write-Log 'httpx produced no output -> no live URLs' 'WARN'; return }
+    # keep only "exists" statuses: 2xx/3xx plus auth-gated 401/403. Drop 404/410/dead.
+    $liveUrls = New-Object System.Collections.Generic.List[string]
+    $rows = New-Object System.Collections.Generic.List[string]
+    foreach ($ln in (Get-Content $jsonl -ErrorAction SilentlyContinue)) {
+        if (-not "$ln".Trim()) { continue }
+        try { $j = $ln | ConvertFrom-Json } catch { continue }
+        $sc = [int]$j.status_code
+        if (-not (($sc -ge 200 -and $sc -lt 400) -or $sc -eq 401 -or $sc -eq 403)) { continue }
+        if ($j.url) { $liveUrls.Add([string]$j.url); $rows.Add($ln) }
+    }
+    $liveSorted = @($liveUrls | Sort-Object -Unique)
+    $liveUris = New-Object System.Collections.Generic.List[string]
+    foreach ($u in $liveSorted) { try { $pq = ([uri]$u).PathAndQuery; if ($pq -and $pq -ne '/') { $liveUris.Add($pq) } } catch {} }
+    Save-Lines (Join-Path $liveDir 'live_urls.txt') $liveSorted
+    Save-Lines (Join-Path $liveDir 'live_uris.txt') (@($liveUris) | Sort-Object -Unique)
+    Save-Lines (Join-Path $liveDir 'live.jsonl') $rows
+    Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 09_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
+}
+
 # ---------------------------------------------------------------- main
 Write-Host ''
-Write-Log ("AssetLens  target=$Target  mode=" + $(if ($Strict) { 'strict' } else { 'pragmatic' }) + '  profile=' + $(if ($KeyedRun) { 'keyed' } else { 'keyless' }) + $(if ($HttpOnly) { '  (http-only)' } else { '' }))
+Write-Log ("AssetLens  target=$Target  mode=" + $(if ($Strict) { 'strict' } else { 'pragmatic' }) + '  profile=' + $(if ($KeyedRun) { 'keyed' } else { 'keyless' }) + $(if ($HttpOnly) { '  (http-only)' } else { '' }) + $(if ($Probe) { '  +ACTIVE-probe' } else { '' }))
 $ip = Get-TargetIP
 
 $steps = @(
@@ -1390,7 +1452,8 @@ $steps = @(
     { Phase4-Origin  $ip },
     { Phase5-History },
     { Phase6-Js },
-    { Phase7-Osint  $ip }
+    { Phase7-Osint  $ip },
+    { Phase8-Live }
 )
 foreach ($s in $steps) { try { & $s } catch { Write-Log "phase failed: $($_.Exception.Message)" 'WARN' } }
 
