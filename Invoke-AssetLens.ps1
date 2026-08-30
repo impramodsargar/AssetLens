@@ -38,6 +38,7 @@ param(
     [switch]$FullBodies,                        # ZIP: also include the raw 06_js\responses\ bodies (default: excluded - already mined)
     [switch]$Diff,                              # DIFF mode: compare -Package (new) against -Against (old)
     [string]$Against,                           # DIFF: the older/baseline package to compare against
+    [string]$Burp,                              # BURP-DIFF mode: with -Package, a Burp sitemap URL txt -> discovered URLs NOT in Burp
     [switch]$Validate,                          # VALIDATE mode: live-check API keys + tools (no target)
     [switch]$Probe,                             # RECON: ACTIVE liveness probe of discovered in-scope URLs (needs authorization)
     [int]$Rate = 15,                            # -Probe: max requests/sec to the target (set to your Rules-of-Engagement limit)
@@ -772,14 +773,46 @@ function Write-ComparerFeed {
     Write-Host ("Comparer feed: {0} in-scope URL(s) -> Comparer_feed.txt  (load into the RDL Comparer's 'Sitemap / Burp Log' slot)" -f @($feed).Count) -ForegroundColor Cyan
 }
 
+function Invoke-BurpDiff {
+    # Local coverage diff: which discovered URLs (Comparer_feed.txt) are NOT in the Burp sitemap (a plain URL txt).
+    # Pure-local - runs in the VDI, no network. Matches on normalized path (scheme/host/query/trailing-slash ignored).
+    param([string]$Package, [string]$BurpFile)
+    if (-not (Test-Path $Package))  { throw "Package not found: $Package" }
+    if (-not (Test-Path $BurpFile)) { throw "Burp URL file not found: $BurpFile" }
+    $feedFile = Join-Path $Package 'Comparer_feed.txt'
+    if (-not (Test-Path $feedFile)) { throw "No Comparer_feed.txt in $Package - run a RECON scan or -Report on it first." }
+    function ToPath([string]$s) {
+        $s = "$s".Trim(); if (-not $s -or $s[0] -eq '#') { return '' }
+        if ($s -match '^(?i)https?://') { try { $s = ([uri]$s).AbsolutePath } catch {} }
+        $s = (($s -split '[?#]', 2)[0]).TrimEnd('/').ToLower()
+        if (-not $s) { $s = '/' }
+        return $s
+    }
+    $burp = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($l in (Get-Content $BurpFile -ErrorAction SilentlyContinue)) { $k = ToPath $l; if ($k) { [void]$burp.Add($k) } }
+    $feedPaths = New-Object System.Collections.Generic.HashSet[string]
+    $missSeen  = New-Object System.Collections.Generic.HashSet[string]
+    $missing   = New-Object System.Collections.Generic.List[string]
+    foreach ($u in (Get-Content $feedFile -ErrorAction SilentlyContinue)) {
+        $k = ToPath $u
+        if (-not $k) { continue }
+        [void]$feedPaths.Add($k)
+        if (-not $burp.Contains($k) -and $missSeen.Add($k)) { [void]$missing.Add("$u".Trim()) }
+    }
+    $mSorted = @($missing | Sort-Object)
+    [System.IO.File]::WriteAllLines((Join-Path $Package 'discovered_not_in_burp.txt'), [string[]]$mSorted, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host ("Burp diff: {0} discovered path(s) | {1} covered by Burp | {2} NOT in Burp -> discovered_not_in_burp.txt" -f $feedPaths.Count, ($feedPaths.Count - $mSorted.Count), $mSorted.Count) -ForegroundColor Cyan
+}
+
 # ================================================================ mode dispatch (non-recon modes return)
 if ($Setup)  { Invoke-Setup -SkipBase:$SkipBase; return }
 if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; Write-ComparerFeed -Package $Package; return }
 if ($MapUat) { if (-not $Package -or -not $UatBase) { throw 'Use: -MapUat -Package <packageDir> -UatBase <url>' }; Invoke-MapUat -Package $Package -UatBase $UatBase -WithParams:$WithParams; return }
 if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies; return }
 if ($Diff)   { if (-not $Package -or -not $Against) { throw 'Use: -Diff -Package <newDir> -Against <oldDir>' }; Invoke-Diff -New $Package -Old $Against; return }
+if ($Burp)   { if (-not $Package) { throw 'Use: -Package <packageDir> -Burp <burp_sitemap_urls.txt>' }; Invoke-BurpDiff -Package $Package -BurpFile $Burp; return }
 if ($Validate) { Invoke-Validate; return }
-if (-not $Target -and -not ($Phase -and $Package)) { throw 'Provide a target host for RECON, or use -Setup / -Report / -MapUat / -Zip / -Diff / -Validate.' }
+if (-not $Target -and -not ($Phase -and $Package)) { throw 'Provide a target host for RECON, or use -Setup / -Report / -MapUat / -Zip / -Diff / -Burp / -Validate.' }
 
 # ---------------------------------------------------------------- config
 # Default loads config\keys.ps1 (keyed run). -Keyless skips it - keyless sources only.

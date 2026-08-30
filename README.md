@@ -106,6 +106,7 @@ notepad .\config\keys.ps1
 | `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map URIs -> `uat_targets.txt` - pure local |
 | `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw bodies excluded by default |
 | `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new ports/CVEs/SANs/endpoints) |
+| `.\Invoke-AssetLens.ps1 -Package <dir> -Burp <sitemap_urls.txt>` | diff the feed against a Burp sitemap URL list -> `discovered_not_in_burp.txt` (what you found but haven't tested) - pure local |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
 | `.\Invoke-AssetLens.ps1 -Package <dir> -Phase P8 [-Probe]` | **re-run phase(s)** on an existing package - no re-discovery (`P1`..`P8`, comma-separated; e.g. `-Phase P5,P6`) |
 
@@ -149,6 +150,7 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 - Keeps `2xx / 3xx / 401 / 403` ("exists", including auth-gated), drops `404/410`/dead.
 - Writes the live URLs to `08_live\live_urls.txt` (full URLs) and `08_live\live_uris.txt` (paths) - ready to import into your own coverage-compare tool (e.g. Burp sitemap vs RDL), which keeps that data wherever it needs to stay.
 - **One-file comparison feed:** every run also writes **`Comparer_feed.txt`** at the package root - the deduped union of all discovered/validated in-scope URLs (OSINT history + archived JS + live JS + live probe), normalized to full `https://` URLs. Drop it straight into a coverage tool's sitemap/URL input to diff against a Burp sitemap or a recursive directory listing (RDL).
+- **Direct Burp coverage diff:** `-Package <dir> -Burp <sitemap_urls.txt>` subtracts your Burp sitemap (a plain URL list) from the feed and writes **`discovered_not_in_burp.txt`** - the URLs AssetLens found that your Burp coverage is missing (exact-path match; scheme / query / trailing-slash ignored). Pure-local, runs in the VDI.
 - **Live JS analysis:** fetches the `.js` the target currently serves and re-extracts endpoints + secrets from the *current* code (not just archived) - `08_live\live_js_endpoints.txt` plus `trufflehog`/`gitleaks`/`retire.js` on the live bundles. With `jsluice` on PATH (AST-based; needs a C toolchain, so not auto-installed) it also writes **`live_js_api.txt`** - the HTTP **method + query/body params per endpoint**, read straight from the JS call sites (`fetch`/`ajax`/`axios`/`XHR`) - a testable API map, not just a URL list.
 
 **DoS-safe by design:** one request per unique URL (no fuzzing), rate-limited (`-Rate`, default 15/s - set it to your RoE limit), capped concurrency, short timeout, minimal retries, no redirect-chasing. Drop `-Rate` low for fragile or WAF-fronted targets.
