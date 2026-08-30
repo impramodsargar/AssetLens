@@ -740,9 +740,41 @@ function Invoke-Validate {
     Write-Host 'Run before a scan to catch dead keys / missing tools. Probes hit the API providers + benign IPs only - never a target.' -ForegroundColor Cyan
 }
 
+function Write-ComparerFeed {
+    # Consolidate every discovered/validated in-scope URL into one RDL-Comparer-ready feed (full https URLs, one per
+    # line) for the tool's "Sitemap / Burp Log" slot. Merges OSINT history + archived JS + live JS + live probe;
+    # keeps only in-scope hosts, resolves site-relative paths onto the target, drops data:/js:/mailto: noise.
+    param([string]$Package)
+    $h = ((Split-Path $Package -Leaf) -replace '_\d{8}(-\d{6})?$', '').ToLower()
+    $hosts = New-Object System.Collections.Generic.HashSet[string]
+    [void]$hosts.Add($h)
+    if ($h -like 'www.*') { [void]$hosts.Add($h.Substring(4)) } else { [void]$hosts.Add("www.$h") }
+    $set = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($rel in @('08_live\live_urls.txt', '08_live\live_js_endpoints.txt', '06_js\endpoints.txt', '05_history\urls_deduped.txt')) {
+        $p = Join-Path $Package $rel
+        if (-not (Test-Path $p)) { continue }
+        foreach ($line in (Get-Content $p -ErrorAction SilentlyContinue)) {
+            $u = "$line".Trim()
+            if (-not $u -or $u[0] -eq '#') { continue }
+            if ($u -match '^(?i)(data:|javascript:|mailto:|tel:)') { continue }
+            if ($u -match '^(?i)https?://') {
+                $uh = ''; try { $uh = ([uri]$u).Host.ToLower() } catch { continue }
+                # normalize scheme to https so entries survive the comparer's https-normalized scope filter (it matches on path anyway)
+                if ($hosts.Contains($uh)) { [void]$set.Add(($u -replace '^(?i)http://', 'https://')) }
+            } elseif ($u.StartsWith('/') -and -not $u.StartsWith('//')) {
+                [void]$set.Add('https://' + $h + (($u -split '#', 2)[0]))
+            }
+        }
+    }
+    $feed = @($set | Sort-Object -Unique)
+    # self-contained write (this runs from the -Report dispatch, before the global Save-Lines/$utf8 helpers are defined)
+    [System.IO.File]::WriteAllLines((Join-Path $Package 'Comparer_feed.txt'), [string[]]$feed, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host ("Comparer feed: {0} in-scope URL(s) -> Comparer_feed.txt  (load into the RDL Comparer's 'Sitemap / Burp Log' slot)" -f @($feed).Count) -ForegroundColor Cyan
+}
+
 # ================================================================ mode dispatch (non-recon modes return)
 if ($Setup)  { Invoke-Setup -SkipBase:$SkipBase; return }
-if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; return }
+if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; Write-ComparerFeed -Package $Package; return }
 if ($MapUat) { if (-not $Package -or -not $UatBase) { throw 'Use: -MapUat -Package <packageDir> -UatBase <url>' }; Invoke-MapUat -Package $Package -UatBase $UatBase -WithParams:$WithParams; return }
 if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies; return }
 if ($Diff)   { if (-not $Package -or -not $Against) { throw 'Use: -Diff -Package <newDir> -Against <oldDir>' }; Invoke-Diff -New $Package -Old $Against; return }
@@ -1647,6 +1679,7 @@ foreach ($k in $phases.Keys) {
 # -Phase rerun: rebuild the report from the updated package, then stop - don't clobber OOS/manifest/zip with a partial run
 if ($RerunPkg) {
     try { Build-Report -Package $pkg | Out-Null; Write-Log 'report rebuilt -> Report.md' 'OK' } catch { Write-Log "report failed: $($_.Exception.Message)" 'WARN' }
+    try { Write-ComparerFeed -Package $pkg } catch { Write-Log "comparer feed failed: $($_.Exception.Message)" 'WARN' }
     Write-Log "re-run DONE  package: $pkg" 'OK'
     return
 }
@@ -1657,6 +1690,7 @@ Save-Lines (Join-Path $pkg 'OOS_observed.txt') (@('# OUT OF SCOPE - observed onl
 
 # synthesize the human-readable report (Report.md) from the collected artifacts
 try { Build-Report -Package $pkg | Out-Null; Write-Log 'report -> Report.md' 'OK' } catch { Write-Log "report failed: $($_.Exception.Message)" 'WARN' }
+try { Write-ComparerFeed -Package $pkg } catch { Write-Log "comparer feed failed: $($_.Exception.Message)" 'WARN' }
 # optional: map URIs onto a UAT base if -UatBase was given
 if ($UatBase) { try { Invoke-MapUat -Package $pkg -UatBase $UatBase | Out-Null; Write-Log 'UAT targets -> 05_history\uat_targets.txt' 'OK' } catch { Write-Log "map-uat failed: $($_.Exception.Message)" 'WARN' } }
 

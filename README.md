@@ -148,6 +148,7 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 - Probes the union of discovered OSINT URLs + endpoints extracted from JS, **restricted to the exact target host** (never off-host / OOS).
 - Keeps `2xx / 3xx / 401 / 403` ("exists", including auth-gated), drops `404/410`/dead.
 - Writes the live URLs to `08_live\live_urls.txt` (full URLs) and `08_live\live_uris.txt` (paths) - ready to import into your own coverage-compare tool (e.g. Burp sitemap vs RDL), which keeps that data wherever it needs to stay.
+- **One-file comparison feed:** every run also writes **`Comparer_feed.txt`** at the package root - the deduped union of all discovered/validated in-scope URLs (OSINT history + archived JS + live JS + live probe), normalized to full `https://` URLs. Drop it straight into a coverage tool's sitemap/URL input to diff against a Burp sitemap or a recursive directory listing (RDL).
 - **Live JS analysis:** fetches the `.js` the target currently serves and re-extracts endpoints + secrets from the *current* code (not just archived) - `08_live\live_js_endpoints.txt` plus `trufflehog`/`gitleaks`/`retire.js` on the live bundles. With `jsluice` on PATH (AST-based; needs a C toolchain, so not auto-installed) it also writes **`live_js_api.txt`** - the HTTP **method + query/body params per endpoint**, read straight from the JS call sites (`fetch`/`ajax`/`axios`/`XHR`) - a testable API map, not just a URL list.
 
 **DoS-safe by design:** one request per unique URL (no fuzzing), rate-limited (`-Rate`, default 15/s - set it to your RoE limit), capped concurrency, short timeout, minimal retries, no redirect-chasing. Drop `-Rate` low for fragile or WAF-fronted targets.
@@ -176,6 +177,7 @@ output/<host>_<date>/
   Report.html      <- same, self-contained dashboard: metric tiles + host-location map + detail cards
   Index.md         <- passive-only attestation + mode + key status
   Verify.md        <- ranked worklist of suggested next checks
+  Comparer_feed.txt<- deduped in-scope URLs (OSINT + JS + live), full https - feed a Burp-sitemap-vs-RDL coverage tool
   OOS_observed.txt <- every off-host asset, flagged DO NOT TEST
   manifest.sha256  <- integrity / chain-of-custody
   recon.log
