@@ -1502,13 +1502,20 @@ function Phase6-Js {
         $smDir = Join-Path $jsDir 'srcmap_src'
         $recon = Expand-SourceMaps $mapBodies $smDir
         if ($recon.files) {
+            $reFiles = @(Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)
             $reLinks = New-Object System.Collections.Generic.HashSet[string]
-            foreach ($rf in (Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+            foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
             $reDelta = @($reLinks | Where-Object { -not $links.Contains($_) }).Count
             foreach ($u in $reLinks) { [void]$links.Add($u) }
             Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)   # re-save endpoints.txt incl. reconstructed-source endpoints
             $rt = Invoke-Tool 'trufflehog' @('filesystem', $smDir, '--no-update', '--json'); if ($rt) { Save-Lines (Get-RawPath (Join-Path $jsDir 'srcmap_trufflehog.json')) $rt }
             Write-Log ('source maps: reconstructed {0} source file(s) from {1} map(s) -> 06_js\srcmap_src\ | +{2} endpoint(s)' -f $recon.files, $recon.maps, $reDelta) 'OK'
+            # full jsluice deep pass on the UNMINIFIED reconstructed source (readable names -> far cleaner sink/handler/GraphQL detection)
+            if ($jsl -and $reFiles.Count) {
+                $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
+                $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $jsDir 'srcmap_' $reMap
+                Write-Log ('srcmap deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 06_js\srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+            }
         }
     }
     # tech fingerprint: body signatures + URL extensions + InternetDB CPEs -> 08_tech\fingerprint.txt
@@ -1833,13 +1840,20 @@ function Phase8-LiveJs {
             $smDir = Join-Path $liveDir 'srcmap_src'
             $recon = Expand-SourceMaps $mapBodies $smDir
             if ($recon.files) {
+                $reFiles = @(Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)
                 $reLinks = New-Object System.Collections.Generic.HashSet[string]
-                foreach ($rf in (Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+                foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
                 $reDelta = @($reLinks | Where-Object { -not $all.Contains($_) }).Count
                 foreach ($u in $reLinks) { [void]$all.Add($u) }
                 Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
                 $rt = Invoke-Tool 'trufflehog' @('filesystem', $smDir, '--no-update', '--json'); if ($rt) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_srcmap_trufflehog.json')) $rt }
                 Write-Log ('live source maps: reconstructed {0} source file(s) from {1} map(s) -> 08_live\srcmap_src\ | +{2} endpoint(s)' -f $recon.files, $recon.maps, $reDelta) 'OK'
+                # full jsluice deep pass on the UNMINIFIED reconstructed source (readable names -> far cleaner sink/handler/GraphQL detection)
+                if ($jsl -and $reFiles.Count) {
+                    $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
+                    $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $liveDir 'live_srcmap_' $reMap
+                    Write-Log ('live srcmap deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 08_live\live_srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+                }
             }
         }
     }
