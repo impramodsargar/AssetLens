@@ -13,8 +13,7 @@
 $Keys = @{
     # --- FREE keys (sign up, free tier) ---
     VirusTotal     = ''   # FREE  virustotal.com            4 req/min, 500/day - passive DNS + reputation
-    Censys         = ''   # FREE  platform.censys.io        Platform PAT (single token, used as Bearer)
-    Netlas         = ''   # FREE  netlas.io                 free daily quota
+    Netlas         = ''   # FREE  netlas.io                 free daily quota (P4 domain lookup)
     SecurityTrails = ''   # FREE  securitytrails.com        50 queries / month
     UrlScan        = ''   # FREE  urlscan.io                search works keyless; key raises limits
     GitHub         = ''   # FREE  github.com/settings/tokens   read-only PAT (public_repo / read:packages)
@@ -26,9 +25,8 @@ $Keys = @{
     CriminalIP     = ''   # FREE  criminalip.io    API key   - WORKS free (primary origin engine)
     Quake          = ''   # FREE  quake.360.net    token
     # Omitted (not usefully free, so not wired): ZoomEye/HunterHow (paid/credit-gated), Fofa (paid query credits), Hunter (limited), IntelX (mostly paid).
-
-    # --- PAID membership, optional (keyless Shodan-InternetDB is the free fallback) ---
-    Shodan         = ''   # host lookup needs PAID membership; free InternetDB is used keyless instead
+    # Not wired: Shodan/Censys host lookups - port/service enumeration is delegated to the separate in-VDI nmap scan.
+    # (Keyless Shodan-InternetDB is still used for CVEs/CPEs; no key needed.)
 }
 
 # Breach / infostealer checks are KEYLESS: LeakCheck public. No key needed.

@@ -68,7 +68,7 @@ notepad .\config\keys.ps1
 
 ## API keys
 
-Every key is **optional** and **free-tier** (Shodan is the lone exception). The keyless core already covers RDAP, crt.sh, Shodan-InternetDB, the web archives (Wayback / CommonCrawl / OTX via `gau` + `waymore`), Tranco, urlscan search, and LeakCheck. Add keys only to widen coverage; anything left blank is skipped.
+Every key is **optional** and **free-tier**. The keyless core already covers RDAP, crt.sh, Shodan-InternetDB, the web archives (Wayback / CommonCrawl / OTX via `gau` + `waymore`), Tranco, urlscan search, and LeakCheck. Add keys only to widen coverage; anything left blank is skipped.
 
 ```powershell
 Copy-Item .\config\keys.example.ps1 .\config\keys.ps1
@@ -78,8 +78,7 @@ notepad .\config\keys.ps1
 | Provider | Tier | Powers | Where to get the key |
 |---|---|---|---|
 | **VirusTotal** | Free (4/min, 500/day) | P4 passive-DNS, reputation | https://www.virustotal.com/gui/my-apikey |
-| **Censys** | Free (Platform PAT) | P3 host data | https://platform.censys.io |
-| **Netlas** | Free (daily quota) | P3 host + P4 domain | https://netlas.io |
+| **Netlas** | Free (daily quota) | P4 domain | https://netlas.io |
 | **SecurityTrails** | Free (50/mo) | P4 passive-DNS | https://securitytrails.com/app/account/credentials |
 | **URLScan** | Free (raises limits) | P5 history | https://urlscan.io/user/profile |
 | **GitHub** | Free (read-only PAT) | P7 code + commit-email search | https://github.com/settings/tokens |
@@ -88,7 +87,6 @@ notepad .\config\keys.ps1
 | **AbuseIPDB** | Free (1000/day) | P3 IP reputation | https://www.abuseipdb.com/account/api |
 | **CriminalIP** | Free | P4 origin-behind-CDN pivot | https://www.criminalip.io/mypage/information |
 | **Quake (360)** | Free (token) | P4 origin pivot | https://quake.360.net |
-| **Shodan** | **Paid** membership | P3 host lookup (keyless InternetDB is the free fallback) | https://account.shodan.io |
 
 > The **GitHub** token only needs read-only public access (a classic PAT with `public_repo`, or a fine-grained token with public-repository read). After signup, each key usually lives under your account or profile/API settings. Run `.\Invoke-AssetLens.ps1 -Validate` to live-check every key you added.
 
@@ -105,7 +103,7 @@ notepad .\config\keys.ps1
 | `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` - pure local, no network |
 | `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map URIs -> `uat_targets.txt` - pure local |
 | `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw bodies excluded by default |
-| `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new ports/CVEs/SANs/endpoints) |
+| `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new CVEs/SANs/endpoints) |
 | `.\Invoke-AssetLens.ps1 -Package <dir> -Burp <sitemap_urls.txt>` | diff the feed against a Burp sitemap URL list -> `discovered_not_in_burp.txt` (what you found but haven't tested) - pure local |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
 | `.\Invoke-AssetLens.ps1 -Package <dir> -Phase P8 [-Probe]` | **re-run phase(s)** on an existing package - no re-discovery (`P1`..`P8`, comma-separated; e.g. `-Phase P5,P6`) |
@@ -161,7 +159,7 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 |---|---|---|
 | **P1** scope | RDAP (apex) + **DNS records (MX/TXT-SPF/DMARC/NS/CNAME)** + IP(s) + **geo-location & country flag** (ipwho.is / flagcdn) + **Microsoft 365 / Azure AD tenant mapping** (tenant ID, Managed/Federated, ADFS URL, tenant domains - queries Microsoft, not the target) + netblock owner + CDN/WAF flag | keyless |
 | **P2** certs | crt.sh SANs (in-scope flagged); `subfinder` (`-Enum`) | keyless |
-| **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host; **AbuseIPDB** IP-reputation | InternetDB keyless |
+| **P3** intel | **Shodan-InternetDB** tech CPEs + known CVEs (keyless) + **AbuseIPDB** IP-reputation. **Ports/services are NOT enumerated here** - that is owned by the separate nmap scan run in-VDI. | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert -> IP pivot; Netlas domain | keyed |
 | **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
 | **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**WebSocket endpoints** (`ws://`/`wss://` + `new WebSocket()` + socket.io/cable paths -> `06_js\websockets.txt`)/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps** (detect **+ reconstruct** the original unminified source from `sourcesContent[]` -> `06_js\srcmap_src\`, then re-mine endpoints + secrets on the readable code)/**API-specs**; optional **`jsluice`** AST pass folds in URLs the regex can't reach + a **method/param API map** (`06_js\js_api.txt`) + a **deep pass** (AST `query`: **DOM XSS sinks** w/ tainted source, **postMessage** handlers flagged for missing origin-check, **GraphQL** ops) + `jsluice secrets` (+ bundled **custom high-signal patterns**: Stripe/Slack/GitHub/GitLab/OpenAI/SendGrid/Twilio/Firebase/JWT/... via `config\jsluice_secrets.json`); + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
@@ -190,7 +188,7 @@ output/<host>_<date>/
 ```
 
 Each phase folder shows only its **readable outputs** (`.txt` endpoints/params/URLs, fingerprints). The raw
-per-source API responses and scanner JSON (RDAP, VirusTotal, Censys, Shodan, GitHub, trufflehog, gitleaks,
+per-source API responses and scanner JSON (RDAP, VirusTotal, InternetDB, AbuseIPDB, GitHub, trufflehog, gitleaks,
 retire.js, raw `httpx` output, ...) are tucked into a **`_raw\`** subfolder in each phase - present for
 chain-of-custody and deeper digging, out of the way when you just want the findings.
 

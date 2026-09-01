@@ -184,8 +184,6 @@ function Build-Report {
     $dns     = GLines '01_scope\dns_records.txt'
     $rdapIp  = GJson '01_scope\rdap_ip.json'
     $idb     = GJson '03_scan\internetdb.json'
-    $shodan  = GJson '03_scan\shodan_host.json'
-    $censys  = GJson '03_scan\censys_host.json'
     $sans    = GLines '02_certs\sans.txt'
     $cands   = GLines '04_origin\candidates.txt'
     $candsEnr = GLines '04_origin\candidates_enriched.txt'
@@ -225,15 +223,9 @@ function Build-Report {
 
     $owner = ''
     if ($rdapIp) { $owner = [string]$rdapIp.name }
-    elseif ($censys.resource.autonomous_system) { $owner = [string]$censys.resource.autonomous_system.name }
 
-    $svc = @{}
-    if ($shodan.data) { foreach ($d in $shodan.data) { if ($d.port) { $svc[[int]$d.port] = (@($d.product, $d.version) | Where-Object { $_ }) -join ' ' } } }
-    if ($censys.resource.services) { foreach ($s in $censys.resource.services) { if ($s.port -and -not $svc[[int]$s.port]) { $svc[[int]$s.port] = [string]$s.extended_service_name; if (-not $svc[[int]$s.port]) { $svc[[int]$s.port] = [string]$s.service_name } } } }
-    $ports = New-Object System.Collections.Generic.SortedSet[int]
-    foreach ($src in @($idb.ports, $shodan.ports)) { foreach ($p in $src) { if ($p) { [void]$ports.Add([int]$p) } } }
-    foreach ($k in $svc.Keys) { [void]$ports.Add([int]$k) }
-
+    # Ports/services are intentionally NOT surfaced here - the separate in-VDI nmap scan owns port enumeration.
+    # P3 keeps only the passive intel nmap does not give you: InternetDB CVEs/CPEs (below) + AbuseIPDB reputation.
     $vulns = @(); if ($idb.vulns) { $vulns = @($idb.vulns) }
     $cpes  = @(); if ($idb.cpes)  { $cpes  = @($idb.cpes) }
 
@@ -259,7 +251,7 @@ function Build-Report {
     W "## Executive summary"
     $hotN = $hot.Count; $secN = ($thVer.Count + $glSpec.Count)
     W ("- **$host_** -> **$ip**" + $(if ($owner) { " ($owner)" } else { '' }) + $(if ($cdnName) { ", behind " + $cdnName } else { '' }) + ".")
-    W ("- Exposed: **{0} ports**{1}, **{2} known CVE(s)** in passive scan data." -f $ports.Count, $(if ($cpes.Count) { ", " + $cpes.Count + " tech CPE(s)" } else { '' }), $vulns.Count)
+    W ("- Passive intel: **{0} known CVE(s)**{1} (port/service enumeration is left to the separate nmap scan)." -f $vulns.Count, $(if ($cpes.Count) { ", " + $cpes.Count + " tech CPE(s)" } else { '' }))
     $cdnNote = if ($cdnName) { "behind $cdnName - verify they answer directly (WAF bypass)" } else { "(no CDN/WAF detected - host is served directly)" }
     W ("- **{0} origin-candidate IP(s)** recovered {1}." -f @($cands).Count, $cdnNote)
     W ("- History: **{0} URLs** ({1} after uro dedup, {2} high-signal), **{3} param(s)**, **{4} JS file(s)**." -f @($allUrls).Count, @($dedupUrls).Count, $hotN, @($params).Count, @($jsUrls).Count)
@@ -279,11 +271,8 @@ function Build-Report {
         }
         W ""
     }
-    W "## 1. Exposed services"
-    if ($ports.Count) {
-        W "| Port | Service / version |"; W "|---|---|"
-        foreach ($p in $ports) { W ("| {0} | {1} |" -f $p, $(if ($svc[[int]$p]) { $svc[[int]$p] } else { '-' })) }
-    } else { W "_No port/service data._" }
+    W "## 1. Technology & DNS"
+    W "_Ports & services: run the separate nmap scan (in-VDI). This report covers the passive tech/CVE/DNS surface only._"
     if (@($dns).Count) {
         $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
         W ""; W ("**DNS / mail hygiene:** " + $(if ($spfMiss) { 'SPF **MISSING**; ' } else { 'SPF ok; ' }) + $(if ($dmarcMiss) { 'DMARC **MISSING**' } else { 'DMARC ok' }) + " (full records in 01_scope\dns_records.txt)")
@@ -295,7 +284,7 @@ function Build-Report {
     W ""
     W "## 2. Vulnerabilities (passive)"
     if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) on the exposed IP:" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
-    else { W "_None flagged by InternetDB. Still version-check the services above._" }
+    else { W "_None flagged by InternetDB. Still version-check the services from the nmap scan._" }
     if ($cpes.Count) { W ""; W ("**Tech / CPEs:** " + (($cpes | Select-Object -First 20) -join ', ')) }
     $rj = GJson '06_js\retirejs.json'
     if ($rj -and $rj.data) {
@@ -340,7 +329,7 @@ function Build-Report {
     W ""
     W "## 3. Origin candidates (behind CDN)"
     if (@($cands).Count) {
-        W "IPs presenting the target's cert on non-CDN addresses - **probe each to see if it serves the app directly (WAF bypass).** InternetDB ports/CVEs shown to prioritise:"; W ""
+        W "IPs presenting the target's cert on non-CDN addresses - **probe each to see if it serves the app directly (WAF bypass).** InternetDB CVEs/tech shown to prioritise (nmap the ports in-VDI):"; W ""
         $cShow = if (@($candsEnr).Count) { $candsEnr } else { $cands }
         foreach ($c in $cShow) { W "- ``$c``" }
     } else { W "_No distinct origin candidates found._" }
@@ -403,7 +392,7 @@ function Build-Report {
     W ""
     W "## 8. Prioritized next actions"
     W "1. **Probe origin candidates** with httpx + screenshot - any that serve the app bypass the CDN/WAF."
-    W ("2. **Confirm the {0} exposed ports** are open, version the services, match CVEs above." -f $ports.Count)
+    W "2. **Run the nmap port/service scan** (in-VDI), then match the service versions against the CVEs above."
     W "3. **Replay prod URIs on UAT** - ``Invoke-AssetLens.ps1 -MapUat -UatBase https://<uat-host>`` -> uat_targets.txt, then ``httpx -l uat_targets.txt`` / nuclei. UAT is never crawled, so these harvested paths ARE your endpoint list."
     W "4. **Hit the high-signal endpoints** (section 4) - load uris.txt + params into Burp Intruder (payload positions); katana to crawl from there. Don't blind-fuzz."
     W "5. **Validate every secret** in section 5 (live? still valid?)."
@@ -446,7 +435,6 @@ function Build-Report {
     HW $(if ($hasLive) { '<span class="pill" style="background:var(--wn-bg);color:var(--wn)">active &middot; -Probe sent traffic</span>' } elseif ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
     HW '</div>'
     HW '<div class="tiles">'
-    HW ('<div class="tile"><div class="l">ports</div><div class="n">{0}</div></div>' -f $ports.Count)
     HW ('<div class="tile"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></div>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<div class="tile"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></div>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<div class="tile"><div class="l">endpoints</div><div class="n">{0}</div></div>' -f $(if (Test-Path (P '06_js\endpoints.txt')) { FLink '06_js\endpoints.txt' @($xEnd).Count } else { @($xEnd).Count }))
@@ -519,12 +507,8 @@ function Build-Report {
     }
     if (-not $secN -and -not $fpN) { HW '<div class="muted">no secrets flagged.</div>' }
     HW '</div></div>'
-    HW '<div class="card"><h2>exposed services</h2>'
-    if ($ports.Count) {
-        HW '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">'
-        foreach ($p in $ports) { $svv = $(if ($svc[[int]$p]) { ' &middot; ' + (HE $svc[[int]$p]) } else { '' }); HW ('<span class="pill mono" style="background:var(--tile);color:var(--text)">{0}{1}</span>' -f $p, $svv) }
-        HW '</div>'
-    } else { HW '<div class="muted">no port data.</div>' }
+    HW '<div class="card"><h2>tech &amp; DNS</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">ports &amp; services: run the separate nmap scan (in-VDI)</div>'
     if ($cpes.Count) { HW ('<div class="muted" style="font-size:13px">tech: {0}</div>' -f (HE (($cpes | Select-Object -First 6) -join ', '))) }
     if (@($dns).Count) {
         $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
@@ -605,7 +589,7 @@ function Build-Report {
     HW '</div></body></html>'
     [System.IO.File]::WriteAllText((P 'Report.html'), ($h -join "`n"), $u8)
     Write-Host "Report written: $(P 'Report.md')  +  Report.html" -ForegroundColor Green
-    Write-Host ("  sections: services={0} ports, vulns={1}, origins={2}, hot-endpoints={3}, params={4}, emails={5}" -f $ports.Count, $vulns.Count, @($cands).Count, $hot.Count, $allParams.Count, @($emails).Count)
+    Write-Host ("  sections: CVEs={0}, origins={1}, hot-endpoints={2}, params={3}, emails={4}" -f $vulns.Count, @($cands).Count, $hot.Count, $allParams.Count, @($emails).Count)
 }
 
 # ================================================================ MAP-UAT mode
@@ -662,7 +646,6 @@ function Invoke-Diff {
     foreach ($p in $New, $Old) { if (-not (Test-Path $p)) { throw "Package not found: $p" } }
     function RL { param($dir, $rel) $p = Join-Path $dir $rel; if (Test-Path $p) { @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } else { @() } }
     $sets = @(
-        @{ rel = '03_scan\ports.txt';            label = 'Ports' },
         @{ rel = '08_tech\internetdb_vulns.txt'; label = 'CVEs' },
         @{ rel = '02_certs\sans.txt';            label = 'Cert SANs' },
         @{ rel = '04_origin\candidates.txt';     label = 'Origin candidates' },
@@ -691,7 +674,7 @@ function Invoke-Diff {
             $out.Add('')
         }
     }
-    if (-not $changed) { $out.Add('_No changes across tracked files (ports/CVEs/SANs/origins/URIs/endpoints/cloud/emails/OOS)._') }
+    if (-not $changed) { $out.Add('_No changes across tracked files (CVEs/SANs/origins/URIs/endpoints/cloud/emails/OOS)._') }
     $dst = Join-Path $New 'Diff.md'
     [System.IO.File]::WriteAllText($dst, ($out -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host ('Diff written: {0}' -f $dst) -ForegroundColor Green
@@ -727,9 +710,7 @@ function Invoke-Validate {
     Write-Host "`nAPI keys:" -ForegroundColor Cyan
     Show 'VirusTotal'     $Keys.VirusTotal     (Hit 'https://www.virustotal.com/api/v3/domains/example.com' @{ 'x-apikey' = $Keys.VirusTotal })
     Show 'SecurityTrails' $Keys.SecurityTrails (Hit 'https://api.securitytrails.com/v1/ping' @{ 'APIKEY' = $Keys.SecurityTrails })
-    if ($Keys.Shodan) { $r = Hit ('https://api.shodan.io/api-info?key={0}' -f $Keys.Shodan); Show 'Shodan' $true $r ("plan=$($r.obj.plan)") } else { Vline 'Shodan' 'not set' 'DarkGray' }
-    Show 'Censys'         $Keys.Censys         (Hit 'https://api.platform.censys.io/v3/global/asset/host/8.8.8.8' @{ Authorization = "Bearer $($Keys.Censys)" })
-    Show 'Netlas'         $Keys.Netlas         (Hit 'https://app.netlas.io/api/host/8.8.8.8/' @{ 'X-API-Key' = $Keys.Netlas })
+    Show 'Netlas'         $Keys.Netlas         (Hit 'https://app.netlas.io/api/domains/?q=domain:example.com' @{ 'X-API-Key' = $Keys.Netlas })
     Show 'CriminalIP'     $Keys.CriminalIP     (Hit ('https://api.criminalip.io/v1/banner/search?query={0}&offset=0' -f [uri]::EscapeDataString('ssl_subject_common_name: example.com')) @{ 'x-api-key' = $Keys.CriminalIP })
     if ($Keys.GitHub) { $r = Hit 'https://api.github.com/rate_limit' @{ Authorization = "Bearer $($Keys.GitHub)"; 'User-Agent' = 'AssetLens' }; Show 'GitHub' $true $r ("core left $($r.obj.resources.core.remaining)") } else { Vline 'GitHub' 'not set' 'DarkGray' }
     Show 'LeakIX'         $Keys.LeakIX         (Hit 'https://leakix.net/host/8.8.8.8' @{ 'api-key' = $Keys.LeakIX; Accept = 'application/json' })
@@ -1224,27 +1205,15 @@ function Phase3-Scan {
     param($IP)
     Write-Log 'P3  internet-scan data'
     if (-not $IP) { Write-Log 'no IP -> skip P3' 'SKIP'; return }
+    # NOTE: port/service enumeration is intentionally NOT done here - that is owned by the separate active nmap scan
+    # run inside the VDI. P3 keeps only the passive intel nmap does not give you: InternetDB CVEs/CPEs + IP reputation.
     $idb = Invoke-Json "https://internetdb.shodan.io/$IP"
     if ($idb) {
         Save-Json  (Join-Path $pkg '03_scan\internetdb.json') $idb
-        Save-Lines (Join-Path $pkg '03_scan\ports.txt') (@($idb.ports) | Sort-Object { [int]$_ })
-        Write-Log ('InternetDB: ports [{0}] | cpes {1} | vulns {2}' -f ($idb.ports -join ','), @($idb.cpes).Count, @($idb.vulns).Count) 'OK'
+        Write-Log ('InternetDB: cpes {0} | vulns {1} | hostnames {2} (ports left to the in-VDI nmap scan)' -f @($idb.cpes).Count, @($idb.vulns).Count, @($idb.hostnames).Count) 'OK'
         if ($idb.cpes)  { Save-Lines (Join-Path $pkg '08_tech\cpes.txt') $idb.cpes }
         if ($idb.vulns) { Save-Lines (Join-Path $pkg '08_tech\internetdb_vulns.txt') $idb.vulns }
         foreach ($hn in $idb.hostnames) { Add-OOS $hn 'InternetDB hostname' }
-    }
-    if (Have-Key 'Shodan') {
-        $sh = Invoke-Json ('https://api.shodan.io/shodan/host/{0}?key={1}' -f $IP, $Keys.Shodan)
-        if ($sh) { Save-Json (Join-Path $pkg '03_scan\shodan_host.json') $sh; Write-Log 'Shodan host ok' 'OK' }
-    }
-    if (Have-Key 'Censys') {
-        # Censys Platform API (Bearer PAT) - host asset endpoint. Host data is under .result.
-        $cv = Invoke-Json "https://api.platform.censys.io/v3/global/asset/host/$IP" @{ Authorization = "Bearer $($Keys.Censys)" }
-        if ($cv) { Save-Json (Join-Path $pkg '03_scan\censys_host.json') $cv.result; Write-Log 'Censys host ok' 'OK' }
-    }
-    if (Have-Key 'Netlas') {
-        $nl = Invoke-Json "https://app.netlas.io/api/host/$IP/" @{ 'X-API-Key' = $Keys.Netlas }
-        if ($nl) { Save-Json (Join-Path $pkg '03_scan\netlas_host.json') $nl; Write-Log 'Netlas host ok' 'OK' }
     }
     if (Have-Key 'AbuseIPDB') {
         # IP reputation (abuse score / reports / usage type / TOR) for the host's IP - free 1000 checks/day
@@ -1305,13 +1274,13 @@ function Phase4-Origin {
     $candUniq = @($cand | Sort-Object -Unique | Where-Object { $_ -and $_ -ne $IP })
     Save-Lines (Join-Path $pkg '04_origin\candidates.txt') $candUniq
     if ($candUniq.Count) {
-        # enrich EACH origin candidate with keyless InternetDB (ports/CVEs/tech) so the tester can triage which one to probe first
+        # enrich EACH origin candidate with keyless InternetDB (CVEs/tech) so the tester can triage which one to probe first (ports left to the in-VDI nmap scan)
         $enriched = New-Object System.Collections.Generic.List[string]
         foreach ($c in ($candUniq | Select-Object -First 25)) {
             $cdb = Invoke-Json "https://internetdb.shodan.io/$c"
-            if ($cdb -and $cdb.ports) {
+            if ($cdb) {
                 Save-Json (Join-Path $pkg ('04_origin\candidate_{0}.json' -f ($c -replace '[^0-9A-Fa-f.]', '_'))) $cdb
-                $enriched.Add(('{0}  ports[{1}]  cves[{2}]  {3}' -f $c, (@($cdb.ports) -join ','), @($cdb.vulns).Count, ((@($cdb.cpes) | Select-Object -First 3) -join ' ')))
+                $enriched.Add(('{0}  cves[{1}]  {2}' -f $c, @($cdb.vulns).Count, ((@($cdb.cpes) | Select-Object -First 3) -join ' ')))
             } else { $enriched.Add(('{0}  (no InternetDB data)' -f $c)) }
         }
         Save-Lines (Join-Path $pkg '04_origin\candidates_enriched.txt') $enriched
@@ -1715,9 +1684,6 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 function Write-Worklist {
     param($IP)
     $origins = if ($script:OriginCandidates -and $script:OriginCandidates.Count) { ($script:OriginCandidates -join ', ') } else { '(none found)' }
-    $ports = ''
-    $pf = Join-Path $pkg '03_scan\ports.txt'
-    if (Test-Path $pf) { $ports = ((Get-Content $pf) -join ', ') }
     Save-Text (Join-Path $pkg 'Verify.md') @"
 # Verify - $Target
 
@@ -1726,7 +1692,7 @@ Active steps only. Run where you are authorized to test. Read Report.md first.
 1. Probe host + every origin candidate with httpx; screenshot.
    - host: $Target ($IP)
    - origin candidates (does origin answer directly, bypassing any WAF?): $origins
-2. Confirm the exposed ports are open: $ports
+2. Run the nmap port/service scan (in-VDI - this tool does not enumerate ports).
    - cross-check 08_tech\internetdb_vulns.txt + 06_js\_raw\retirejs.json against the live versions.
 3. Replay prod URIs on UAT: Invoke-AssetLens.ps1 -MapUat -Package . -UatBase https://<uat> -> uat_targets.txt, then httpx/nuclei.
 4. Load 05_history\uris.txt + 06_js\wordlist.txt + params.txt into Burp Intruder (payload sets); katana to crawl. Scan 05_history\all_urls.txt by extension for sensitive file types.
