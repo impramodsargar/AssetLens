@@ -945,6 +945,82 @@ function Get-JsluiceApiMap {
     $withMethod = @($api.Keys | Where-Object { $api[$_].m.Count }).Count
     return @{ urls = $urls; lines = $lines; withMethod = $withMethod; count = $api.Count }
 }
+function Invoke-JsluiceDeep {
+    # jsluice AST "deep pass" via `query` (tree-sitter, so no string/comment false positives regex gives):
+    #   DOM XSS sinks (+ tainted source), postMessage handlers (origin-check flagged), GraphQL operations.
+    # Writes <OutDir>\<Prefix>{dom_sinks,postmessage,graphql_ops}.txt; returns a count summary. Batches files (argv cap).
+    param([string]$JsluicePath, [string[]]$Files, [string]$OutDir, [string]$Prefix = '')
+    $res = @{ sinks = 0; sinksHigh = 0; pm = 0; pmOpen = 0; gql = 0 }
+    if (-not $Files -or @($Files).Count -eq 0) { return $res }
+    function _JQ { param($q)
+        $o = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $Files.Count; $i += 80) {
+            $chunk = @($Files[$i..([Math]::Min($i + 79, $Files.Count - 1))])
+            $r = Invoke-Tool $JsluicePath (@('query', '-q', $q) + $chunk) -TimeoutSec 600
+            if (-not $r) { continue }
+            foreach ($ln in $r) {
+                $v = "$ln".Trim(); if (-not $v) { continue }
+                if ($v.Length -ge 2 -and $v[0] -eq '"' -and $v[-1] -eq '"') { $v = $v.Substring(1, $v.Length - 2) -replace '\\"', '"' -replace '\\\\', '\' }
+                $v = ($v -replace '\\n', ' ' -replace '\\t', ' ' -replace '\s+', ' ').Trim()
+                if ($v) { [void]$o.Add($v) }
+            }
+        }
+        return $o
+    }
+    # taint sources that raise a sink to [HIGH]. Matching is CASE-SENSITIVE (-cmatch) so 'Function' the constructor
+    # is not confused with every 'function', and sinks are matched on the CALLEE (text before the first '(') or the
+    # assignment TARGET (text before '='), so a giant enclosing IIFE that merely contains a sink deep inside is not flagged.
+    $taint = 'location\.(hash|search|href)|document\.(URL|referrer|cookie)|window\.name|\b(e|ev|evt|event|msg|m)\.data\b|searchParams|URLSearchParams|\.getItem\('
+    function _T { param($s) if ($s.Length -gt 180) { $s.Substring(0, 180) + ' ...' } else { $s } }
+    $asns  = _JQ '(assignment_expression) @a'
+    $calls = _JQ '(call_expression) @c'
+    $sinks = New-Object System.Collections.Generic.List[string]
+    foreach ($a in $asns) {
+        $left = ($a -split '=', 2)[0]
+        $cat = if ($left -cmatch '\.(innerHTML|outerHTML)\s*$') { 'innerHTML' }
+               elseif ($left -cmatch '\.srcdoc\s*$') { 'srcdoc' }
+               elseif ($left -cmatch '(?<![\w])location(\.href)?\s*$') { 'location=' }
+               else { '' }
+        if ($cat) { $hi = [bool]((($a -split '=', 2)[-1]) -cmatch $taint); if ($hi) { $res.sinksHigh++ }; $res.sinks++; [void]$sinks.Add(('{0} {1,-13} {2}' -f $(if ($hi) { '[HIGH]' } else { '[sink]' }), $cat, (_T $a))) }
+    }
+    foreach ($c in $calls) {
+        $callee = ($c -split '\(', 2)[0]; $rest = ($c -split '\(', 2)[-1]
+        $cat = if ($callee -cmatch '(^|[^\w.$])eval$') { 'eval' }
+               elseif ($callee -cmatch '(^|[^\w.$])Function$') { 'Function()' }
+               elseif ($callee -cmatch 'document\.write(ln)?$') { 'document.write' }
+               elseif ($callee -cmatch '\.insertAdjacentHTML$') { 'insertAdjHTML' }
+               elseif ($callee -cmatch '(^|[^\w.$])set(Timeout|Interval)$' -and $rest -cmatch '^\s*["'']') { 'setTimeout-str' }
+               elseif ($callee -cmatch '\.html$' -and $rest -cmatch '^\s*[^)\s''"]') { 'jQuery.html' }
+               else { '' }
+        if ($cat) { $hi = [bool]($rest -cmatch $taint); if ($hi) { $res.sinksHigh++ }; $res.sinks++; [void]$sinks.Add(('{0} {1,-13} {2}' -f $(if ($hi) { '[HIGH]' } else { '[sink]' }), $cat, (_T $c))) }
+    }
+    # postMessage handlers - anchored to the listener node (callee = *.addEventListener + first arg 'message', or *.onmessage=)
+    $pm = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $calls) {
+        $rest = ($c -split '\(', 2)[-1]
+        if (($c -split '\(', 2)[0] -cmatch '\.addEventListener$' -and $rest -cmatch '^\s*["'']message["'']') {
+            $open = -not ($c -cmatch '\.origin\b'); if ($open) { $res.pmOpen++ }; $res.pm++
+            [void]$pm.Add(('{0} {1}' -f $(if ($open) { '[NO-ORIGIN-CHECK]' } else { '[checks-origin] ' }), (_T $c)))
+        }
+    }
+    foreach ($a in $asns) {
+        if (($a -split '=', 2)[0] -cmatch '\.onmessage\s*$') {
+            $open = -not ($a -cmatch '\.origin\b'); if ($open) { $res.pmOpen++ }; $res.pm++
+            [void]$pm.Add(('{0} {1}' -f $(if ($open) { '[NO-ORIGIN-CHECK]' } else { '[checks-origin] ' }), (_T $a)))
+        }
+    }
+    # GraphQL operations from template literals (lowercase keyword + a brace)
+    $gql = New-Object System.Collections.Generic.List[string]
+    foreach ($t in (_JQ '(template_string) @t')) {
+        if ($t -cmatch '(?<![\w])(query|mutation|subscription|fragment)\s' -and $t -match '\{') { [void]$gql.Add((_T $t)) }
+    }
+    $gqlU = @($gql | Sort-Object -Unique); $res.gql = $gqlU.Count
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    if ($sinks.Count) { Save-Lines (Join-Path $OutDir ($Prefix + 'dom_sinks.txt'))   (@($sinks) | Sort-Object -Unique) }
+    if ($pm.Count)    { Save-Lines (Join-Path $OutDir ($Prefix + 'postmessage.txt')) (@($pm)    | Sort-Object -Unique) }
+    if ($gqlU.Count)  { Save-Lines (Join-Path $OutDir ($Prefix + 'graphql_ops.txt')) $gqlU }
+    return $res
+}
 function Get-ActiveHosts {
     # active-probe scope = the target host + its www/non-www counterpart (same site). Safe default; other
     # subdomains the passive layer found stay OUT of active traffic unless explicitly authorized.
@@ -1374,6 +1450,12 @@ function Phase6-Js {
         Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)   # re-save endpoints.txt as the regex + jsluice union
         if ($map.lines.Count) { Save-Lines (Join-Path $jsDir 'js_api.txt') $map.lines }
         Write-Log ('jsluice (AST): {0}/{1} bodies (skipped {2} >{3}KB) -> {4} url(s) (+{5} beyond regex) | API map {6} url(s) ({7} with method) -> 06_js\js_api.txt' -f $jsBodies.Count, $bodyFiles.Count, $skipped, $capKB, $map.urls.Count, $delta, $map.count, $map.withMethod) 'OK'
+        # jsluice deep pass (AST query): DOM XSS sinks + postMessage handlers + GraphQL ops -> 06_js\dom_sinks/postmessage/graphql_ops.txt
+        $deep = Invoke-JsluiceDeep $jsl @($jsBodies.FullName) $jsDir ''
+        Write-Log ('jsluice deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
+        # jsluice secrets on the archived bodies (AST-based; complements trufflehog/gitleaks) - was live-only before
+        $jsec = Invoke-Tool $jsl (@('secrets') + @($jsBodies.FullName)) -TimeoutSec 600
+        if ($jsec) { Save-Lines (Get-RawPath (Join-Path $jsDir 'jsluice_secrets.json')) $jsec }
     }
     # tech fingerprint: body signatures + URL extensions + InternetDB CPEs -> 08_tech\fingerprint.txt
     $extHints = [ordered]@{ '.aspx' = 'ASP.NET'; '.asmx' = 'ASP.NET web service'; '.axd' = 'ASP.NET'; '.ashx' = 'ASP.NET handler'; '.jsp' = 'Java/JSP'; '.jspx' = 'Java/JSP'; '.do' = 'Java (Struts/Spring)'; '.action' = 'Java Struts'; '.php' = 'PHP'; '.cfm' = 'ColdFusion'; '.vue' = 'Vue.js' }
@@ -1675,6 +1757,9 @@ function Phase8-LiveJs {
         $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
         if ($s) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_jsluice_secrets.json')) $s }
         Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} | API map {5} urls ({6} with method) -> live_js_api.txt" -f $bodies.Count, $rx.Count, $map.urls.Count, $added, $all.Count, $map.count, $map.withMethod) 'OK'
+        # jsluice deep pass (AST query) on the LIVE code -> 08_live\live_dom_sinks/postmessage/graphql_ops.txt
+        $deep = Invoke-JsluiceDeep $jsl @($bodies.FullName) $liveDir 'live_'
+        Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
     } else {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
