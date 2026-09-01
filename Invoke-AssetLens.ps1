@@ -1021,6 +1021,30 @@ function Invoke-JsluiceDeep {
     if ($gqlU.Count)  { Save-Lines (Join-Path $OutDir ($Prefix + 'graphql_ops.txt')) $gqlU }
     return $res
 }
+function Expand-SourceMaps {
+    # Reconstruct the ORIGINAL unminified source from .map files: sourcesContent[] holds each source (parallel to
+    # sources[]). Writes each under $OutDir at a sanitized RELATIVE path (scheme/drive stripped, '.'/'..' dropped so a
+    # crafted path can't escape $OutDir); skips node_modules. Returns @{ files; maps }. Feeds a re-mine on readable code.
+    param([System.IO.FileInfo[]]$MapFiles, [string]$OutDir)
+    $written = 0; $mapsUsed = 0
+    foreach ($mf in $MapFiles) {
+        $j = $null; try { $j = Get-Content $mf.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
+        $src = @($j.sources); $content = @($j.sourcesContent)
+        if (-not $src.Count -or -not $content.Count) { continue }
+        $any = $false
+        for ($i = 0; $i -lt $src.Count -and $i -lt $content.Count; $i++) {
+            $c = $content[$i]; if ($null -eq $c -or "$c".Length -eq 0) { continue }
+            $p = ("$($src[$i])" -replace '^[a-zA-Z][a-zA-Z0-9+.\-]*://', '') -replace '^[a-zA-Z]:[\\/]', '' -replace '\\', '/'
+            $segs = @($p -split '/' | Where-Object { $_ -and $_ -ne '.' -and $_ -ne '..' } | ForEach-Object { $_ -replace '[<>:"|?*]', '_' })
+            if (-not $segs.Count -or ($segs -contains 'node_modules')) { continue }
+            if ($segs.Count -gt 30) { $segs = $segs[-30..-1] }
+            $dest = Join-Path $OutDir ($segs -join [IO.Path]::DirectorySeparatorChar)
+            try { New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null; [System.IO.File]::WriteAllText($dest, [string]$c, (New-Object System.Text.UTF8Encoding($false))); $written++; $any = $true } catch {}
+        }
+        if ($any) { $mapsUsed++ }
+    }
+    return @{ files = $written; maps = $mapsUsed }
+}
 function Get-ActiveHosts {
     # active-probe scope = the target host + its www/non-www counterpart (same site). Safe default; other
     # subdomains the passive layer found stay OUT of active traffic unless explicitly authorized.
@@ -1457,6 +1481,22 @@ function Phase6-Js {
         $jsec = Invoke-Tool $jsl (@('secrets') + @($jsBodies.FullName)) -TimeoutSec 600
         if ($jsec) { Save-Lines (Get-RawPath (Join-Path $jsDir 'jsluice_secrets.json')) $jsec }
     }
+    # source-map reconstruction: archived bodies carrying sourcesContent[] hold the ORIGINAL unminified source.
+    # Rebuild it, then re-mine the readable code (endpoints -> endpoints.txt union; secrets via trufflehog).
+    $mapBodies = @($bodyFiles | Where-Object { $_.Length -gt 200 -and (Select-String -LiteralPath $_.FullName -Pattern '"sourcesContent"' -SimpleMatch -Quiet -ErrorAction SilentlyContinue) })
+    if ($mapBodies.Count) {
+        $smDir = Join-Path $jsDir 'srcmap_src'
+        $recon = Expand-SourceMaps $mapBodies $smDir
+        if ($recon.files) {
+            $reLinks = New-Object System.Collections.Generic.HashSet[string]
+            foreach ($rf in (Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+            $reDelta = @($reLinks | Where-Object { -not $links.Contains($_) }).Count
+            foreach ($u in $reLinks) { [void]$links.Add($u) }
+            Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)   # re-save endpoints.txt incl. reconstructed-source endpoints
+            $rt = Invoke-Tool 'trufflehog' @('filesystem', $smDir, '--no-update', '--json'); if ($rt) { Save-Lines (Get-RawPath (Join-Path $jsDir 'srcmap_trufflehog.json')) $rt }
+            Write-Log ('source maps: reconstructed {0} source file(s) from {1} map(s) -> 06_js\srcmap_src\ | +{2} endpoint(s)' -f $recon.files, $recon.maps, $reDelta) 'OK'
+        }
+    }
     # tech fingerprint: body signatures + URL extensions + InternetDB CPEs -> 08_tech\fingerprint.txt
     $extHints = [ordered]@{ '.aspx' = 'ASP.NET'; '.asmx' = 'ASP.NET web service'; '.axd' = 'ASP.NET'; '.ashx' = 'ASP.NET handler'; '.jsp' = 'Java/JSP'; '.jspx' = 'Java/JSP'; '.do' = 'Java (Struts/Spring)'; '.action' = 'Java Struts'; '.php' = 'PHP'; '.cfm' = 'ColdFusion'; '.vue' = 'Vue.js' }
     $extsF = @(); if (Test-Path (Join-Path $pkg '05_history\extensions.txt')) { $extsF = @(Get-Content (Join-Path $pkg '05_history\extensions.txt') -ErrorAction SilentlyContinue) }
@@ -1764,6 +1804,28 @@ function Phase8-LiveJs {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
     Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
+    # source-map reconstruction on the LIVE code: fetch <jsurl>.map (DoS-safe, one request each) -> rebuild the original
+    # unminified source -> re-mine it for endpoints + secrets. Reconstructed source is a high-value artifact on its own.
+    if ($js.Count) {
+        $mapUrls = @($js | ForEach-Object { (($_ -split '[?#]', 2)[0]) + '.map' } | Sort-Object -Unique)
+        $smFetch = Join-Path $liveDir '_mapfetch'; New-Item -ItemType Directory -Force -Path $smFetch | Out-Null
+        $mapList = Join-Path $smFetch '_maps.txt'; Save-Lines $mapList $mapUrls
+        Invoke-Tool $hx @('-l', $mapList, '-sr', '-srd', $smFetch, '-mc', '200', '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '15', '-retries', '1') -TimeoutSec 1200 | Out-Null
+        $mapBodies = @(Get-ChildItem $smFetch -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne '_maps.txt' -and $_.Name -ne 'index.txt' -and $_.Length -gt 200 -and (Select-String -LiteralPath $_.FullName -Pattern '"sourcesContent"' -SimpleMatch -Quiet -ErrorAction SilentlyContinue) })
+        if ($mapBodies.Count) {
+            $smDir = Join-Path $liveDir 'srcmap_src'
+            $recon = Expand-SourceMaps $mapBodies $smDir
+            if ($recon.files) {
+                $reLinks = New-Object System.Collections.Generic.HashSet[string]
+                foreach ($rf in (Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+                $reDelta = @($reLinks | Where-Object { -not $all.Contains($_) }).Count
+                foreach ($u in $reLinks) { [void]$all.Add($u) }
+                Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
+                $rt = Invoke-Tool 'trufflehog' @('filesystem', $smDir, '--no-update', '--json'); if ($rt) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_srcmap_trufflehog.json')) $rt }
+                Write-Log ('live source maps: reconstructed {0} source file(s) from {1} map(s) -> 08_live\srcmap_src\ | +{2} endpoint(s)' -f $recon.files, $recon.maps, $reDelta) 'OK'
+            }
+        }
+    }
     # secrets + vuln-libs on the LIVE code (same proven scanners P6 runs on the archived bodies); raw JSON -> 08_live\_raw\
     $t = Invoke-Tool 'trufflehog' @('filesystem', $ljDir, '--no-update', '--json'); if ($t) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_trufflehog.json')) $t }
     Invoke-Tool 'gitleaks' @('detect', '--source', $ljDir, '--no-git', '-r', (Get-RawPath (Join-Path $liveDir 'live_js_gitleaks.json'))) | Out-Null
