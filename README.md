@@ -164,9 +164,9 @@ By default AssetLens never touches the target. `-Probe` turns on an **opt-in act
 | **P3** scan | **Shodan-InternetDB** (ports/CPEs/CVEs, keyless!); Shodan host; Censys host; Netlas host; **AbuseIPDB** IP-reputation | InternetDB keyless |
 | **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert -> IP pivot; Netlas domain | keyed |
 | **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
-| **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps** (detect **+ reconstruct** the original unminified source from `sourcesContent[]` -> `06_js\srcmap_src\`, then re-mine endpoints + secrets on the readable code)/**API-specs**; optional **`jsluice`** AST pass folds in URLs the regex can't reach + a **method/param API map** (`06_js\js_api.txt`) + a **deep pass** (AST `query`: **DOM XSS sinks** w/ tainted source, **postMessage** handlers flagged for missing origin-check, **GraphQL** ops) + `jsluice secrets`; + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
+| **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**WebSocket endpoints** (`ws://`/`wss://` + `new WebSocket()` + socket.io/cable paths -> `06_js\websockets.txt`)/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps** (detect **+ reconstruct** the original unminified source from `sourcesContent[]` -> `06_js\srcmap_src\`, then re-mine endpoints + secrets on the readable code)/**API-specs**; optional **`jsluice`** AST pass folds in URLs the regex can't reach + a **method/param API map** (`06_js\js_api.txt`) + a **deep pass** (AST `query`: **DOM XSS sinks** w/ tainted source, **postMessage** handlers flagged for missing origin-check, **GraphQL** ops) + `jsluice secrets` (+ bundled **custom high-signal patterns**: Stripe/Slack/GitHub/GitLab/OpenAI/SendGrid/Twilio/Firebase/JWT/... via `config\jsluice_secrets.json`); + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
 | **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
-| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs -> `08_live\live_urls.txt`/`live_uris.txt`; **fetches live JS** and re-extracts endpoints (+ `jsluice` **method/param API map** + the **deep pass**: DOM sinks / postMessage / GraphQL) + `trufflehog`/`gitleaks`/`retire.js`; also **fetches `.js.map` and reconstructs the original source** -> `08_live\srcmap_src\`, re-mined. Opt-in; authorization required | active |
+| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs -> `08_live\live_urls.txt`/`live_uris.txt`; **fetches `robots.txt` / `sitemap.xml` / `.well-known/security.txt`** (Disallow paths + sitemap `<loc>` URLs -> `08_live\well_known_urls.txt`, folded into the feed); **fetches live JS** and re-extracts endpoints + **WebSocket endpoints** (`08_live\live_websockets.txt`) (+ `jsluice` **method/param API map** + the **deep pass**: DOM sinks / postMessage / GraphQL + `secrets` w/ custom patterns) + `trufflehog`/`gitleaks`/`retire.js`; also **fetches `.js.map` and reconstructs the original source** -> `08_live\srcmap_src\`, re-mined. Opt-in; authorization required | active |
 
 > Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
 
@@ -179,12 +179,13 @@ output/<host>_<date>/
   Report.html      <- same, self-contained dashboard: metric tiles + host-location map + detail cards
   Index.md         <- passive-only attestation + mode + key status
   Verify.md        <- ranked worklist of suggested next checks
-  Comparer_feed.txt<- deduped in-scope URLs (OSINT + JS + live), full https - feed a Burp-sitemap-vs-RDL coverage tool
+  Comparer_feed.txt<- deduped in-scope URLs (OSINT + JS + live + robots/sitemap), full https - feed a Burp-sitemap-vs-RDL coverage tool
   OOS_observed.txt <- every off-host asset, flagged DO NOT TEST
   manifest.sha256  <- integrity / chain-of-custody
   recon.log
   01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
   08_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (coverage-compare handoff),
+                      well_known.txt + well_known_urls.txt (robots/sitemap/security.txt), live_websockets.txt,
                       js/ (fetched live JS) + live_js_endpoints.txt + live_js_api.txt (jsluice method/param map)
 ```
 

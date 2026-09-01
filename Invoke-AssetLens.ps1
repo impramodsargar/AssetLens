@@ -751,7 +751,7 @@ function Write-ComparerFeed {
     [void]$hosts.Add($h)
     if ($h -like 'www.*') { [void]$hosts.Add($h.Substring(4)) } else { [void]$hosts.Add("www.$h") }
     $set = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($rel in @('08_live\live_urls.txt', '08_live\live_js_endpoints.txt', '06_js\endpoints.txt', '05_history\urls_deduped.txt')) {
+    foreach ($rel in @('08_live\live_urls.txt', '08_live\live_js_endpoints.txt', '08_live\well_known_urls.txt', '06_js\endpoints.txt', '05_history\urls_deduped.txt')) {
         $p = Join-Path $Package $rel
         if (-not (Test-Path $p)) { continue }
         foreach ($line in (Get-Content $p -ErrorAction SilentlyContinue)) {
@@ -908,6 +908,15 @@ function Get-EndpointsFromText {
     param([string]$c, $sink)
     foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
     foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
+}
+function Get-WebSocketRefs {
+    # WebSocket endpoints are a distinct attack surface the http(s) extractor ignores: ws:// / wss:// literals and the
+    # URL passed to `new WebSocket(...)` (incl. a socket.io path). Site-relative WS paths kept too, but the indicator
+    # (ws/websocket/socket.io/sockjs/cable) must be a whole path SEGMENT -- else substrings like "aws"/"views" match. -> $sink.
+    param([string]$c, $sink)
+    foreach ($m in [regex]::Matches($c, '(?i)wss?://[^\s"''<>()\\]{4,}'))                    { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
+    foreach ($m in [regex]::Matches($c, '(?i)new\s+WebSocket\s*\(\s*["'']([^"''\\]{2,})["'']')) { [void]$sink.Add($m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($c, '(?i)["''](/(?:[a-z0-9_\-.]+/)*(?:ws|wss|websocket|socket\.io|sockjs|cable|actioncable)(?:/[a-z0-9_\-./]*)?)(?=["''?])')) { [void]$sink.Add($m.Groups[1].Value) }
 }
 function Get-JsluiceApiMap {
     # jsluice parses each JS file's AST and emits one record per call site: url + method + query/body params.
@@ -1418,11 +1427,13 @@ function Phase6-Js {
     $smRef = New-Object System.Collections.Generic.HashSet[string]
     # archived OpenAPI/Swagger specs: a body that IS a spec -> the full endpoint contract
     $apiEp = New-Object System.Collections.Generic.List[string]; $apiSpecN = 0
+    $ws = New-Object System.Collections.Generic.HashSet[string]
     foreach ($f in $bodyFiles) {
         $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
         if (-not $c) { continue }
         if ($corpus.Length -lt 3000000) { $seg = $(if ($c.Length -gt 80000) { $c.Substring(0, 80000) } else { $c }); [void]$corpus.Append($seg).Append("`n") }
         Get-EndpointsFromText $c $links
+        Get-WebSocketRefs $c $ws
         foreach ($tk in $techSig.Keys) { if ($c -match $techSig[$tk]) { $techHits[$tk] = [int]$techHits[$tk] + 1 } }
         if ($c -match '"version"\s*:\s*3' -and $c -match '"sources"\s*:\s*\[') { try { $sm = $c | ConvertFrom-Json; foreach ($s in $sm.sources) { if ($s) { [void]$smSrc.Add([string]$s) } } } catch {} }
         foreach ($m in [regex]::Matches($c, '(?://[#@]\s*sourceMappingURL=)([^\s''"]+)')) {
@@ -1463,7 +1474,8 @@ function Phase6-Js {
     Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)
     Save-Lines (Join-Path $jsDir 'params.txt')    (@($prm)   | Sort-Object)
     Save-Lines (Join-Path $jsDir 'wordlist.txt')  (@($words) | Sort-Object)
-    Write-Log ('extracted {0} endpoints | {1} params | {2} wordlist | {3} cloud assets from {4} bodies' -f $links.Count, $prm.Count, $words.Count, $cloud.Count, $cnt) 'OK'
+    if ($ws.Count) { Save-Lines (Join-Path $jsDir 'websockets.txt') (@($ws) | Sort-Object) }
+    Write-Log ('extracted {0} endpoints | {1} params | {2} wordlist | {3} cloud assets | {4} websocket(s) from {5} bodies' -f $links.Count, $prm.Count, $words.Count, $cloud.Count, $ws.Count, $cnt) 'OK'
     # jsluice AST pass over the same archived bodies: recovers URLs the regex can't (built from string concatenation)
     # and a method + query/body param API map. Folds its URLs into endpoints.txt; writes the map to 06_js\js_api.txt.
     $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
@@ -1492,7 +1504,8 @@ function Phase6-Js {
         $deep = Invoke-JsluiceDeep $jsl @($jsBodies.FullName) $jsDir '' $jUrlMap
         Write-Log ('jsluice deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
         # jsluice secrets on the archived bodies (AST-based; complements trufflehog/gitleaks) - was live-only before
-        $jsec = Invoke-Tool $jsl (@('secrets') + @($jsBodies.FullName)) -TimeoutSec 600
+        $secPat = Join-Path $ScriptRoot 'config\jsluice_secrets.json'
+        $jsec = Invoke-Tool $jsl ((@('secrets') + $(if (Test-Path $secPat) { @('--patterns', $secPat) } else { @() })) + @($jsBodies.FullName)) -TimeoutSec 600
         if ($jsec) { Save-Lines (Get-RawPath (Join-Path $jsDir 'jsluice_secrets.json')) $jsec }
     }
     # source-map reconstruction: archived bodies carrying sourcesContent[] hold the ORIGINAL unminified source.
@@ -1724,6 +1737,42 @@ Reminder: nothing in OOS_observed.txt is in scope. Do not test it.
 "@
 }
 
+function Get-WellKnown {
+    # ACTIVE (called only from the -Probe liveness phase): fetch robots.txt / sitemap.xml / security.txt on the in-scope
+    # hosts. Disallow paths often name admin/internal areas; the sitemap is a full URL list; security.txt = the contact.
+    # One request each, no redirect-follow, 200-only. Discovered URLs -> well_known_urls.txt (fed into Comparer_feed).
+    param([string]$Package)
+    $liveDir = Join-Path $Package '08_live'; New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
+    function _Wk([string]$u) { try { $r = Invoke-WebRequest -Uri $u -TimeoutSec 12 -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop; if ([int]$r.StatusCode -eq 200) { return [string]$r.Content } } catch {}; return $null }
+    $urls = New-Object System.Collections.Generic.HashSet[string]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $sm = New-Object System.Collections.Generic.List[string]
+    foreach ($h in (Get-ActiveHosts)) {
+        $base = "https://$h"
+        $rob = _Wk "$base/robots.txt"
+        if ($rob -and $rob -match '(?im)^\s*(user-agent|disallow|allow|sitemap)\s*:') {
+            $notes.Add("# $base/robots.txt")
+            foreach ($ln in ($rob -split "`n")) {
+                $l = $ln.Trim()
+                if ($l -match '^(?i)(dis)?allow\s*:\s*(\S+)') { $p = (($matches[2] -split '[*?#]')[0]); if ($p -and $p.StartsWith('/') -and $p.Length -gt 1) { [void]$urls.Add($base + $p); $notes.Add("  $l") } }
+                elseif ($l -match '^(?i)sitemap\s*:\s*(\S+)') { $sm.Add($matches[1].Trim()); $notes.Add("  $l") }
+            }
+        }
+        $sm.Add("$base/sitemap.xml")
+        $sec = _Wk "$base/.well-known/security.txt"; if (-not $sec) { $sec = _Wk "$base/security.txt" }
+        if ($sec -and $sec -match '(?im)^\s*(contact|policy|expires|encryption)\s*:') { $notes.Add("# $base security.txt"); foreach ($ln in (($sec -split "`n") | Select-Object -First 15)) { if ($ln.Trim()) { $notes.Add("  " + $ln.Trim()) } } }
+    }
+    $seen = New-Object System.Collections.Generic.HashSet[string]; $q = [System.Collections.Generic.Queue[string]]::new(); foreach ($s in ($sm | Sort-Object -Unique)) { $q.Enqueue($s) }
+    $fetched = 0
+    while ($q.Count -and $fetched -lt 50) {
+        $u = $q.Dequeue(); if (-not $seen.Add($u)) { continue }; $fetched++
+        $body = _Wk $u; if (-not $body) { continue }
+        foreach ($m in [regex]::Matches($body, '(?i)<loc>\s*([^<\s]+)\s*</loc>')) { $loc = $m.Groups[1].Value; if ($loc -match '(?i)sitemap.*\.xml') { $q.Enqueue($loc) } else { [void]$urls.Add($loc) } }
+    }
+    if ($notes.Count) { Save-Lines (Join-Path $liveDir 'well_known.txt') $notes }
+    if ($urls.Count)  { Save-Lines (Join-Path $liveDir 'well_known_urls.txt') (@($urls) | Sort-Object) }
+    Write-Log ('well-known: robots/sitemap/security.txt -> {0} URL(s)/path(s) -> 08_live\well_known_urls.txt' -f $urls.Count) 'OK'
+}
 # ================================================================ P8 liveness (ACTIVE - opt-in via -Probe)
 function Phase8-Live {
     if (-not $Probe) { return }   # active target contact is opt-in and requires authorization for the target
@@ -1774,6 +1823,7 @@ function Phase8-Live {
     Save-Lines (Join-Path $liveDir 'live_uris.txt') (@($liveUris) | Sort-Object -Unique)
     Save-Lines (Join-Path $liveDir 'live.jsonl') $rows
     Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 08_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
+    Get-WellKnown $pkg
 }
 
 # ================================================================ P8 live JS (ACTIVE - opt-in via -Probe)
@@ -1805,7 +1855,9 @@ function Phase8-LiveJs {
     # endpoints from the LIVE code: regex baseline (always) + optional jsluice AST pass, kept separate so the two
     # are directly comparable in one scan (regex-only vs what jsluice adds on top).
     $rx = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $rx } }
+    $ws = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $rx; Get-WebSocketRefs $c $ws } }
+    if ($ws.Count) { Save-Lines (Join-Path $liveDir 'live_websockets.txt') (@($ws) | Sort-Object); Write-Log ('live WebSocket endpoint(s): {0} -> 08_live\live_websockets.txt' -f $ws.Count) 'OK' }
     $all = New-Object System.Collections.Generic.HashSet[string]
     foreach ($u in $rx) { [void]$all.Add($u) }
     $jsl = (Get-Command jsluice -ErrorAction SilentlyContinue).Source
@@ -1815,7 +1867,8 @@ function Phase8-LiveJs {
         foreach ($u in $map.urls) { [void]$all.Add($u) }
         $added = @($map.urls | Where-Object { -not $rx.Contains($_) }).Count   # how many jsluice found beyond the regex (logged)
         Save-Lines (Join-Path $liveDir 'live_js_api.txt') $map.lines            # METHOD + params per endpoint (the AST payoff)
-        $s = Invoke-Tool $jsl (@('secrets') + @($bodies.FullName)) -TimeoutSec 600
+        $secPat = Join-Path $ScriptRoot 'config\jsluice_secrets.json'
+        $s = Invoke-Tool $jsl ((@('secrets') + $(if (Test-Path $secPat) { @('--patterns', $secPat) } else { @() })) + @($bodies.FullName)) -TimeoutSec 600
         if ($s) { Save-Lines (Get-RawPath (Join-Path $liveDir 'live_js_jsluice_secrets.json')) $s }
         Write-Log ("live JS: {0} file(s) -> regex {1} | jsluice {2} (+{3} beyond regex) | union {4} | API map {5} urls ({6} with method) -> live_js_api.txt" -f $bodies.Count, $rx.Count, $map.urls.Count, $added, $all.Count, $map.count, $map.withMethod) 'OK'
         # jsluice deep pass (AST query) on the LIVE code -> 08_live\live_dom_sinks/postmessage/graphql_ops.txt
