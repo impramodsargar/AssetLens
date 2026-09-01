@@ -1028,7 +1028,10 @@ function Expand-SourceMaps {
     param([System.IO.FileInfo[]]$MapFiles, [string]$OutDir)
     $written = 0; $mapsUsed = 0
     foreach ($mf in $MapFiles) {
-        $j = $null; try { $j = Get-Content $mf.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
+        $raw = ''; try { $raw = Get-Content $mf.FullName -Raw -ErrorAction Stop } catch { continue }
+        # httpx -sr prepends the HTTP request/response headers; the .map JSON is the {...} body. Archived bodies are already pure.
+        $bi = $raw.IndexOf('{'); $bj = $raw.LastIndexOf('}'); if ($bi -lt 0 -or $bj -le $bi) { continue }
+        $j = $null; try { $j = $raw.Substring($bi, $bj - $bi + 1) | ConvertFrom-Json } catch { continue }
         $src = @($j.sources); $content = @($j.sourcesContent)
         if (-not $src.Count -or -not $content.Count) { continue }
         $any = $false
