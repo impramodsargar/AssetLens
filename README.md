@@ -18,314 +18,165 @@
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#running-assetlens">Running</a> •
-  <a href="#modes">Modes</a> •
+  <a href="#quick-start">Quick start</a> •
+  <a href="#commands--flags">Commands</a> •
   <a href="#what-it-collects">Collects</a> •
-  <a href="#output-package">Output</a> •
-  <a href="#scope-discipline">Scope</a>
+  <a href="#output">Output</a> •
+  <a href="#api-keys">Keys</a>
 </p>
 
 ---
 
-**AssetLens** is a PowerShell-native passive reconnaissance collector for a **single internet-facing host**. It gathers everything from third-party sources - without sending a single packet to the target - and produces a self-contained report (plain text / JSON, readable with nothing but a text editor) plus a ranked worklist of suggested next checks.
-
-> **The rule:** by default, PASSIVE = zero packets to the target host - every artifact comes from third parties that already scanned it (certificate transparency, internet-scan DBs, web archives, RDAP, OSINT APIs). The **only** exception is the opt-in **`-Probe`** flag (off by default), which actively liveness-checks discovered URLs and therefore requires authorization for the target.
-
-## Features
-
-- **Zero-touch passive** - all data from third-party sources; the target never sees you
-- **Single-host discipline** - every off-host asset is auto-tagged `OUT OF SCOPE, DO NOT TEST` and kept out of the active worklist
-- **Seven passive phases** - scope/ownership, certs, internet-scan, origin-behind-CDN, history, JS mining, OSINT
-- **Opt-in active liveness (`-Probe`)** - `httpx`-probes discovered URLs on *authorized* targets and exports the live ones, DoS-safe by design
-- **Keyed or keyless** - a keyless HTTP core runs with zero config; free keys only widen coverage
-- **Microsoft 365 / Azure AD** tenant mapping - tenant ID, Managed vs Federated, ADFS/IdP URL, tenant domains
-- **Passive tech fingerprinting** - a bundled Wappalyzer ruleset matched against archived bodies (no live request)
-- **OSINT** - AlienVault OTX threat-intel, AbuseIPDB reputation, GitHub code + commit-emails, LeakIX, breach-check
-- **Self-contained report** - `Report.md` plus a `Report.html` dashboard with no CDN deps, so it opens anywhere offline
-- **Packaged output** - auto-zipped and SHA-256'd, with a ranked `Verify.md` worklist of suggested next checks
-- **PowerShell-native** - no WSL, no Git Bash; the keyless core works before you install anything
+**AssetLens** is a PowerShell-native passive-recon collector for a **single internet-facing host**. It maps the target's external attack surface entirely from third-party sources — **zero packets to the target** — and writes a self-contained, hash-sealed evidence package (plain text / JSON) plus a ranked worklist. The one exception is the opt-in **`-Probe`** phase (P8), which liveness-checks discovered URLs and needs target authorization.
 
 ## Architecture
 
-Everything flows one way. Third-party sources that have **already** scanned the target feed the passive pipeline (P1-P7), which writes a single evidence package. The target itself is only ever touched by the opt-in `-Probe` phase (P8), on authorised engagements.
+Public sources feed seven passive phases (P1–P7); the sealed package hands off to your coverage and active-testing tools. Only the opt-in `-Probe` phase (P8) ever touches the target.
 
 ```mermaid
 flowchart TB
-    subgraph SRC["Public / third-party sources — they already scanned the target"]
-        direction LR
-        S1["Certificate<br/>Transparency"]
-        S2["Internet-scan DBs<br/>Shodan InternetDB"]
-        S3["Web archives<br/>Wayback · CommonCrawl"]
-        S4["Registries · DNS<br/>RDAP · M365"]
-        S5["Threat · breach feeds<br/>OTX · LeakIX · GitHub"]
+    IN["Target host + flags<br/>-Strict · -Keyless · -Enum · -Probe · -Sow"]
+    SRC[("Public / third-party OSINT<br/>CT logs · InternetDB · web archives · RDAP/DNS · threat &amp; breach feeds")]
+
+    subgraph PASSIVE["PASSIVE PIPELINE  ·  zero packets to target"]
+        direction TB
+        P1["P1 · Scope — RDAP · DNS · IP · geo · CDN/WAF · M365 tenant"]
+        P2["P2 · Certs — crt.sh SANs · subfinder (-Enum)"]
+        P3["P3 · Intel — InternetDB CVEs/CPEs · AbuseIPDB reputation"]
+        P4["P4 · Origin — passive-DNS · CriminalIP/Quake cert→IP pivot (WAF bypass)"]
+        P5["P5 · History — waymore + gau archives · uro dedup"]
+        P6["P6 · JS mining — endpoints · params · secrets · cloud · WebSockets ·<br/>source-map rebuild · DOM-XSS/postMessage/GraphQL · tech fingerprint"]
+        P7["P7 · OSINT — OTX · LeakIX · GitHub code+emails · breach-check · Tranco"]
+        P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
     end
-    subgraph AL["AssetLens — passive by default · zero packets to the target"]
+
+    P8["P8 · Active liveness (opt-in -Probe) — httpx · robots/sitemap/.well-known ·<br/>live-JS re-mine · .js.map reconstruct"]
+    TGT(["Target host — only ever touched here, authorised"])
+
+    subgraph OUT["EVIDENCE PACKAGE  ·  plain text/JSON · hash-sealed · auto-zip"]
         direction LR
-        P1["P1<br/>Scope"] --> P2["P2<br/>Certs"] --> P3["P3<br/>Intel"] --> P4["P4<br/>Origin"] --> P5["P5<br/>History"] --> P6["P6<br/>JS mining"] --> P7["P7<br/>OSINT"]
+        R["Report.md<br/>+ .html"]
+        F["Comparer_feed.txt"]
+        V["Verify.md"]
+        O["OOS_observed.txt"]
+        M["manifest.sha256"]
     end
-    subgraph OUT["Evidence package · output folder"]
+
+    subgraph HAND["HANDOFF"]
         direction LR
-        O1["Report.md<br/>+ Report.html"]
-        O2["Comparer_feed.txt"]
-        O3["raw artifacts<br/>+ manifest.sha256"]
+        RDL["RDL Comparer<br/>coverage vs filesystem"]
+        BURP["-Burp diff<br/>not-in-Burp"]
+        UAT["-MapUat<br/>UAT replay"]
+        VDI["VDI active test<br/>nmap · Burp"]
     end
-    TGT(["Target host<br/>never contacted in passive mode"])
-    P8["P8 · active liveness<br/>opt-in -Probe"]
-    SRC ==> AL
-    AL ==> OUT
-    AL -.-> P8
-    P8 -. "authorised targets only" .-> TGT
-    OUT --> RDL["RDL Comparer<br/>coverage vs filesystem"]
-    OUT --> VDI["VDI active testing<br/>nmap · Burp"]
+
+    IN --> PASSIVE
+    SRC ==> PASSIVE
+    PASSIVE ==> OUT
+    PASSIVE -.-> P8
+    P8 -. "authorised" .-> TGT
+    P8 ==> OUT
+    OUT --> RDL & BURP & UAT & VDI
+
     classDef pass fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
     classDef act fill:#fdf1d6,stroke:#d29922,color:#5a3d00;
     classDef tgt fill:#fde0e0,stroke:#cf222e,color:#6e0b0b;
+    classDef out fill:#eef2ff,stroke:#1f6feb,color:#0a2540;
     class P1,P2,P3,P4,P5,P6,P7 pass;
     class P8 act;
     class TGT tgt;
+    class R,F,V,O,M out;
 ```
 
-> **Legend** — 🟩 passive (zero packets to target) · 🟨 active, opt-in `-Probe` (authorised only) · 🟥 the target (never contacted in passive mode).
+> **Legend** — 🟩 passive, zero packets · 🟨 opt-in active `-Probe`, authorised only · 🟥 the target · 🟦 outputs.
 
-### Data flow
-
-A single process, one trust boundary: everything the tool reads comes from public data stores; the only path to the target is the dashed, opt-in one.
-
-```mermaid
-flowchart LR
-    TESTER["Tester"]
-    SRC[("Public OSINT sources")]
-    TGT["Target host"]
-    PKG[("Evidence package")]
-    RDL["RDL Comparer"]
-    TESTER -->|"host + flags"| PROC(("AssetLens<br/>collect · mine · synthesise"))
-    SRC -->|"certs · scans · archives · records"| PROC
-    PROC -. "0 packets · passive" .-> TGT
-    PROC -->|"writes"| PKG
-    PKG -->|"report + worklist"| TESTER
-    PKG -->|"coverage feed"| RDL
-    classDef store fill:#eef2ff,stroke:#1f6feb,color:#0a2540;
-    classDef proc fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
-    class SRC,PKG store;
-    class PROC proc;
-```
-
-### Where it fits in an engagement
-
-Passive recon runs **outside** the client environment first; the sealed, hash-verified package is then carried **into** the secured VDI for the authorised active phase.
-
-```mermaid
-flowchart LR
-    subgraph OUTSIDE["Outside client env · passive · no authorisation"]
-        direction TB
-        A["1 · AssetLens passive recon"] --> B["2 · Scope and plan review"]
-    end
-    subgraph INSIDE["Inside secured VDI · authorised · hands-on"]
-        direction TB
-        C["3 · Active testing<br/>nmap · Burp · -Probe"] --> D["4 · Coverage check + report"]
-    end
-    B ==>|"carry the evidence package"| C
-    classDef pass fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
-    classDef act fill:#fdf1d6,stroke:#d29922,color:#5a3d00;
-    class A,B pass;
-    class C,D act;
-```
-
-## Installation
+## Quick start
 
 ```powershell
 git clone https://github.com/impramodsargar/AssetLens.git
 cd AssetLens
-
-# 1. install the toolchain (subfinder, gau, httpx, waymore, uro, retire.js, trufflehog, gitleaks)
-.\Invoke-AssetLens.ps1 -Setup
-# if Go / Python were just installed, restart the shell, then:
-.\Invoke-AssetLens.ps1 -Setup -SkipBase
-
-# 2. (optional) add your free API keys
-Copy-Item .\config\keys.example.ps1 .\config\keys.ps1
-notepad .\config\keys.ps1
+.\Invoke-AssetLens.ps1 -Setup                           # toolchain (restart shell if Go/Python were just installed, then: -Setup -SkipBase)
+Copy-Item .\config\keys.example.ps1 .\config\keys.ps1   # optional — free keys widen coverage
+.\Invoke-AssetLens.ps1 app.target.com                   # run
 ```
 
-> The keyless HTTP core (RDAP, crt.sh, Shodan-InternetDB, Tranco, LeakCheck, M365 mapping) runs with **zero keys**. Keys only widen coverage; anything left blank is skipped. `config\keys.ps1` is git-ignored - never commit real keys.
+The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, M365) runs with zero keys. Output lands in `output\<host>_<date>\`, auto-zipped + SHA-256'd. `config\keys.ps1` is git-ignored — never commit real keys.
 
-## API keys
-
-Every key is **optional** and **free-tier**. The keyless core already covers RDAP, crt.sh, Shodan-InternetDB, the web archives (Wayback / CommonCrawl / OTX via `gau` + `waymore`), Tranco, urlscan search, and LeakCheck. Add keys only to widen coverage; anything left blank is skipped.
-
-```powershell
-Copy-Item .\config\keys.example.ps1 .\config\keys.ps1
-notepad .\config\keys.ps1
-```
-
-| Provider | Tier | Powers | Where to get the key |
-|---|---|---|---|
-| **VirusTotal** | Free (4/min, 500/day) | P4 passive-DNS, reputation | https://www.virustotal.com/gui/my-apikey |
-| **Netlas** | Free (daily quota) | P4 domain | https://netlas.io |
-| **SecurityTrails** | Free (50/mo) | P4 passive-DNS | https://securitytrails.com/app/account/credentials |
-| **URLScan** | Free (raises limits) | P5 history | https://urlscan.io/user/profile |
-| **GitHub** | Free (read-only PAT) | P7 code + commit-email search | https://github.com/settings/tokens |
-| **LeakIX** | Free | P7 host exposure | https://leakix.net/settings/api |
-| **AlienVault OTX** | Free | P7 threat pulses + passive-DNS | https://otx.alienvault.com/api |
-| **AbuseIPDB** | Free (1000/day) | P3 IP reputation | https://www.abuseipdb.com/account/api |
-| **CriminalIP** | Free | P4 origin-behind-CDN pivot | https://www.criminalip.io/mypage/information |
-| **Quake (360)** | Free (token) | P4 origin pivot | https://quake.360.net |
-
-> The **GitHub** token only needs read-only public access (a classic PAT with `public_repo`, or a fine-grained token with public-repository read). After signup, each key usually lives under your account or profile/API settings. Run `.\Invoke-AssetLens.ps1 -Validate` to live-check every key you added.
-
-## Usage
-
-```powershell
-.\Invoke-AssetLens.ps1 <host> [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..]
-```
+## Commands & flags
 
 | Command | What it does |
 |---|---|
-| `.\Invoke-AssetLens.ps1 <host>` | **RECON** -> package + `Report.md` + auto-zip |
-| `.\Invoke-AssetLens.ps1 -Setup [-SkipBase]` | install the toolchain |
-| `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` - pure local, no network |
-| `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map URIs -> `uat_targets.txt` - pure local |
-| `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies] [-Sow <num>]` | (re)zip a package for transfer; raw bodies excluded by default; `-Sow` names it `citiva_<num>.zip` |
-| `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new CVEs/SANs/endpoints) |
-| `.\Invoke-AssetLens.ps1 -Package <dir> -Burp <sitemap_urls.txt>` | diff the feed against a Burp sitemap URL list -> `discovered_not_in_burp.txt` (what you found but haven't tested) - pure local |
-| `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
-| `.\Invoke-AssetLens.ps1 -Package <dir> -Phase P8 [-Probe]` | **re-run phase(s)** on an existing package - no re-discovery (`P1`..`P8`, comma-separated; e.g. `-Phase P5,P6`) |
-
-## Running AssetLens
-
-```powershell
-# full keyed pass - widest coverage
-.\Invoke-AssetLens.ps1 app.target.com
-
-# keyless pass - no API keys, no quota burn, nothing tied to your accounts
-.\Invoke-AssetLens.ps1 app.target.com -Keyless
-
-# strictest passivity - no DNS resolution at all (IP only from passive-DNS APIs)
-.\Invoke-AssetLens.ps1 app.target.com -Strict
-
-# recon, then map the harvested URIs onto another host for replay
-.\Invoke-AssetLens.ps1 app.target.com -UatBase https://uat.target.com
-```
-
-Output lands in `output\app.target.com_<date>\`, auto-zipped with a `.zip.sha256` ready to transfer.
-
-## Modes
+| `Invoke-AssetLens.ps1 <host> [-Probe] [-Sow <n>]` | **RECON** → package + `Report.md` + auto-zip |
+| `... -Setup [-SkipBase]` | install the toolchain |
+| `... -Validate` | preflight every key + tool (hits providers + benign IPs, never a target) |
+| `... -Report -Package <dir>` | rebuild `Report.md` — pure-local |
+| `... -Zip -Package <dir> [-Sow <n>]` | (re)zip for transfer; `-Sow` names it `citiva_<n>.zip` |
+| `... -Diff -Package <new> -Against <old>` | diff two scans → `Diff.md` |
+| `... -Package <dir> -Burp <urls.txt>` | feed vs Burp sitemap → `discovered_not_in_burp.txt` |
+| `... -MapUat -Package <dir> -UatBase <url>` | replay discovered URIs onto a UAT host |
+| `... -Package <dir> -Phase P5,P6 [-Probe]` | re-run phase(s) on a package, no re-discovery |
 
 | Flag | Effect |
 |---|---|
-| *(default)* | Pragmatic - one DNS resolution of the target is permitted to get its IP |
-| `-Strict` | No DNS resolution at all; IP comes only from passive-DNS APIs. Pick this if the rules forbid *any* target contact. |
-| `-HttpOnly` | Skip every external CLI tool; run only the HTTP core (keyless + keyed APIs) |
-| `-Keyless` | Ignore `config\keys.ps1`; run only the no-key sources. Default (no flag) uses your keys for the widest coverage. |
-| `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** - single-host scope. Only for wildcard / multi-host targets. |
-| `-Probe` | **ACTIVE liveness probe** (opt-in, off by default) of discovered in-scope URLs via `httpx`. Sends traffic to the target - **only where you are authorized.** Writes live URLs to `08_live\`. |
-| `-Rate <n>` | With `-Probe`: max requests/sec to the target (default 15). Set to your Rules-of-Engagement limit. |
-| `-Sow <num>` | Name the transfer zip **`citiva_<num>.zip`** (+ `.zip.sha256`) instead of `<host>_<date>.zip` - the Citi VA deliverable convention. Works on a RECON run or a standalone `-Zip`. The folder inside the zip keeps the `<host>_<date>` identity. |
-
-The chosen mode is recorded in `Index.md`.
-
-## Active liveness probe (`-Probe`)
-
-By default AssetLens never touches the target. `-Probe` turns on an **opt-in active phase** for engagements where you are **authorized** to send traffic:
-
-- Probes the union of discovered OSINT URLs + endpoints extracted from JS, **restricted to the exact target host** (never off-host / OOS).
-- Keeps `2xx / 3xx / 401 / 403` ("exists", including auth-gated), drops `404/410`/dead.
-- Writes the live URLs to `08_live\live_urls.txt` (full URLs) and `08_live\live_uris.txt` (paths) - ready to import into your own coverage-compare tool (e.g. Burp sitemap vs RDL), which keeps that data wherever it needs to stay.
-- **One-file comparison feed:** every run also writes **`Comparer_feed.txt`** at the package root - the deduped union of all discovered/validated in-scope URLs (OSINT history + archived JS + live JS + live probe), normalized to full `https://` URLs. Drop it straight into a coverage tool's sitemap/URL input to diff against a Burp sitemap or a recursive directory listing (RDL).
-- **Direct Burp coverage diff:** `-Package <dir> -Burp <sitemap_urls.txt>` subtracts your Burp sitemap (a plain URL list) from the feed and writes **`discovered_not_in_burp.txt`** - the URLs AssetLens found that your Burp coverage is missing (exact-path match; scheme / query / trailing-slash ignored). Pure-local, runs in the VDI.
-- **Live JS analysis:** fetches the `.js` the target currently serves and re-extracts endpoints + secrets from the *current* code (not just archived) - `08_live\live_js_endpoints.txt` plus `trufflehog`/`gitleaks`/`retire.js` on the live bundles. With `jsluice` on PATH (AST-based; needs a C toolchain, so not auto-installed) it also writes **`live_js_api.txt`** - the HTTP **method + query/body params per endpoint**, read straight from the JS call sites (`fetch`/`ajax`/`axios`/`XHR`) - a testable API map, not just a URL list.
-
-**DoS-safe by design:** one request per unique URL (no fuzzing), rate-limited (`-Rate`, default 15/s - set it to your RoE limit), capped concurrency, short timeout, minimal retries, no redirect-chasing. Drop `-Rate` low for fragile or WAF-fronted targets.
+| `-Strict` | no DNS resolution at all — IP only from passive-DNS APIs |
+| `-Keyless` | ignore `keys.ps1`; run no-key sources only |
+| `-HttpOnly` | HTTP core only — skip external CLI tools |
+| `-Enum` | opt-in subdomain enum (`subfinder`) — wildcard / multi-host scope only |
+| `-Probe [-Rate 15]` | **ACTIVE** liveness on the target host — authorised only. DoS-safe: 1 req/URL, rate-limited, no fuzzing |
+| `-Sow <n>` | name the zip `citiva_<n>.zip` — Citi VA deliverable convention |
 
 ## What it collects
 
-| Phase | Source | Key? |
+| Phase | What it pulls (all third-party / passive) | Keys |
 |---|---|---|
-| **P1** scope | RDAP (apex) + **DNS records (MX/TXT-SPF/DMARC/NS/CNAME)** + IP(s) + **geo-location & country flag** (ipwho.is / flagcdn) + **Microsoft 365 / Azure AD tenant mapping** (tenant ID, Managed/Federated, ADFS URL, tenant domains - queries Microsoft, not the target) + netblock owner + CDN/WAF flag | keyless |
-| **P2** certs | crt.sh SANs (in-scope flagged); `subfinder` (`-Enum`) | keyless |
-| **P3** intel | **Shodan-InternetDB** tech CPEs + known CVEs (keyless) + **AbuseIPDB** IP-reputation. **Ports/services are NOT enumerated here** - that is owned by the separate nmap scan run in-VDI. | InternetDB keyless |
-| **P4** origin | VirusTotal + SecurityTrails passive-DNS; **CriminalIP** (+ Quake) direct cert -> IP pivot; Netlas domain | keyed |
-| **P5** history | **`waymore`** (`-mode B` - Wayback + CommonCrawl + OTX + URLScan + **GhostArchive**) pulls the URL list **and** downloads the response bodies in one pass; **`gau`** as an independent backstop; **`uro`** collapses near-duplicate URL patterns | keyless |
-| **P6** js | mines the bodies **`waymore`** already downloaded in P5 -> **native regex** extracts endpoints/params/wordlist/**cloud-assets**/**WebSocket endpoints** (`ws://`/`wss://` + `new WebSocket()` + socket.io/cable paths -> `06_js\websockets.txt`)/**tech-fingerprint** (built-in signatures + bundled Wappalyzer ruleset)/**source-maps** (detect **+ reconstruct** the original unminified source from `sourcesContent[]` -> `06_js\srcmap_src\`, then re-mine endpoints + secrets on the readable code)/**API-specs**; optional **`jsluice`** AST pass folds in URLs the regex can't reach + a **method/param API map** (`06_js\js_api.txt`) + a **deep pass** (AST `query`: **DOM XSS sinks** w/ tainted source, **postMessage** handlers flagged for missing origin-check, **GraphQL** ops) + `jsluice secrets` (+ bundled **custom high-signal patterns**: Stripe/Slack/GitHub/GitLab/OpenAI/SendGrid/Twilio/Firebase/JWT/... via `config\jsluice_secrets.json`); + `trufflehog`/`gitleaks` secrets + **`retire.js`** vuln-libs (CVEs link to NVD) | keyless core |
-| **P7** osint | Tranco; GitHub code search **+ commit-emails**; **AlienVault OTX** threat-pulses + passive-DNS; LeakIX; **LeakCheck** breach-check (per discovered email); SpiderFoot passive | mixed |
-| **P8** live *(`-Probe`)* | **ACTIVE** - `httpx` liveness-probes in-scope URLs -> `08_live\live_urls.txt`/`live_uris.txt`; **fetches `robots.txt` / `sitemap.xml` / `.well-known/security.txt`** (Disallow paths + sitemap `<loc>` URLs -> `08_live\well_known_urls.txt`, folded into the feed); **fetches live JS** and re-extracts endpoints + **WebSocket endpoints** (`08_live\live_websockets.txt`) (+ `jsluice` **method/param API map** + the **deep pass**: DOM sinks / postMessage / GraphQL + `secrets` w/ custom patterns) + `trufflehog`/`gitleaks`/`retire.js`; also **fetches `.js.map` and reconstructs the original source** -> `08_live\srcmap_src\`, re-mined. Opt-in; authorization required | active |
+| **P1 Scope** | RDAP · DNS (MX/SPF/DMARC/NS/CNAME) · IP · geo · CDN/WAF · netblock owner · **M365 / Azure AD tenant** | keyless |
+| **P2 Certs** | crt.sh SANs (in-scope flagged) · `subfinder` (`-Enum`) | keyless |
+| **P3 Intel** | Shodan-InternetDB **CVEs/CPEs** · AbuseIPDB reputation *(ports left to the in-VDI nmap scan)* | keyless |
+| **P4 Origin** | passive-DNS (VirusTotal · SecurityTrails) · **CriminalIP / Quake cert→IP pivot** (WAF bypass) · Netlas | keyed |
+| **P5 History** | `waymore` + `gau` archives (Wayback · CommonCrawl · OTX · URLScan) · `uro` dedup | keyless |
+| **P6 JS mining** | endpoints · params · wordlist · cloud assets · **WebSockets** · secrets (`trufflehog`/`gitleaks`/`jsluice` + custom patterns) · `retire.js` vuln-libs · Wappalyzer fingerprint · **source-map reconstruction** · jsluice AST **API map + DOM-XSS/postMessage/GraphQL deep pass** | keyless core |
+| **P7 OSINT** | AlienVault OTX · LeakIX · GitHub code + commit-emails · LeakCheck breach-check · Tranco · SpiderFoot | mixed |
+| **P8 Live** *(`-Probe`, active)* | `httpx` liveness · robots / sitemap / `.well-known` · live-JS re-mine · `.js.map` reconstruct → `08_live\` | active |
 
-> Missing tool or missing key -> that step logs `SKIP` and the run continues. Coverage scales with what you have installed and configured.
+Missing a tool or key? That step logs `SKIP` and the run continues — coverage scales with what you have installed.
 
-## Output package
+## Output
 
 ```
 output/<host>_<date>/
-  Report.md        <- synthesized brief: services / CVEs / origins / attack-surface / JS API map / secrets / OSINT
-                      + a Live/active-surface section when -Probe ran  (READ FIRST)
-  Report.html      <- same, self-contained dashboard: metric tiles + host-location map + detail cards
-  Index.md         <- passive-only attestation + mode + key status
-  Verify.md        <- ranked worklist of suggested next checks
-  Comparer_feed.txt<- deduped in-scope URLs (OSINT + JS + live + robots/sitemap), full https - feed a Burp-sitemap-vs-RDL coverage tool
-  OOS_observed.txt <- every off-host asset, flagged DO NOT TEST
-  manifest.sha256  <- integrity / chain-of-custody
-  recon.log
-  01_scope/  02_certs/  03_scan/  04_origin/  05_history/  06_js/  07_osint/  08_tech/
-  08_live/         <- only with -Probe: live_urls.txt, live_uris.txt, live.jsonl (coverage-compare handoff),
-                      well_known.txt + well_known_urls.txt (robots/sitemap/security.txt), live_websockets.txt,
-                      js/ (fetched live JS) + live_js_endpoints.txt + live_js_api.txt (jsluice method/param map)
+  Report.md · Report.html   readable brief + offline dashboard   (READ FIRST)
+  Comparer_feed.txt         deduped in-scope URLs → your coverage tool (Burp-vs-RDL)
+  Verify.md                 ranked worklist of next checks
+  OOS_observed.txt          off-host assets, flagged DO NOT TEST
+  manifest.sha256           integrity / chain-of-custody   (+ auto .zip + .zip.sha256)
+  01_scope … 07_osint · 08_tech/   per-phase readable outputs (raw JSON in each _raw/)
+  08_live/                  only with -Probe: live URLs · well-known · live JS + API map
 ```
 
-Each phase folder shows only its **readable outputs** (`.txt` endpoints/params/URLs, fingerprints). The raw
-per-source API responses and scanner JSON (RDAP, VirusTotal, InternetDB, AbuseIPDB, GitHub, trufflehog, gitleaks,
-retire.js, raw `httpx` output, ...) are tucked into a **`_raw\`** subfolder in each phase - present for
-chain-of-custody and deeper digging, out of the way when you just want the findings.
+Everything is plain text / JSON — usable with nothing but a text editor. **`Comparer_feed.txt`** drops straight into a coverage tool to diff discovered-vs-tested; `-Burp <urls.txt>` runs that diff locally → `discovered_not_in_burp.txt`.
 
-### Packaging
+## API keys
 
-Each recon run **auto-creates** `output\<host>_<date>.zip` + `.zip.sha256`. Re-zip any package with:
+All **free-tier** and **optional** — the keyless core already covers RDAP, crt.sh, InternetDB, archives, LeakCheck and M365. Add keys only to widen coverage:
 
-```powershell
-.\Invoke-AssetLens.ps1 -Zip -Package output\<host>_<date>
-```
+- **P3** AbuseIPDB · **P4** VirusTotal · SecurityTrails · Netlas · CriminalIP · Quake · **P5** URLScan · **P7** GitHub · LeakIX · AlienVault OTX
 
-For a client deliverable, pass **`-Sow <num>`** (on the RECON run or the `-Zip` above) to name it **`citiva_<num>.zip`** + `.zip.sha256` instead of `<host>_<date>.zip` - the Citi VA convention. The `<host>_<date>` folder is still the top level inside the zip, so the package identity is preserved.
-
-Transfer the zip via your preferred channel and **verify the `.zip.sha256`** on the other side. Everything is plain text / JSON, so it is usable anywhere with nothing but a text editor - drive `Verify.md` from there.
+Sign up at each provider's account/API page, paste into `config\keys.ps1`, and run `.\Invoke-AssetLens.ps1 -Validate` to live-check them.
 
 ## Scope discipline
 
-The target is **one host**. Everything else the tools surface - SANs, subdomains, co-hosted siblings, InternetDB hostnames, passive-DNS neighbours - is written to `OOS_observed.txt` as **OUT OF SCOPE, DO NOT TEST**, never into the active worklist. The guard is automatic, so off-host assets cannot accidentally end up on the active list.
+The target is **one host**. Everything else the tools surface — SANs, subdomains, co-hosted siblings, passive-DNS neighbours — is auto-written to `OOS_observed.txt` as **OUT OF SCOPE, DO NOT TEST**, never into the active worklist.
 
-## Notes
+<details>
+<summary><b>Notes &amp; troubleshooting</b></summary>
 
-- **Keys** live in `config\keys.ps1`, which is git-ignored. Never commit real keys; ship only `keys.example.ps1`, and rotate any key that ever lands in a log.
-- **Why PowerShell, not Git Bash:** avoids MSYS path-mangling of slash args; HTTP lookups use `Invoke-RestMethod` (no curl arg-mangling).
-- **Tech fingerprints:** `config\wappalyzer.json` is a slimmed, MIT-licensed Wappalyzer ruleset (via ProjectDiscovery `wappalyzergo`; see `config\wappalyzer.LICENSE`) - body-matchable patterns only, matched **passively** against archived bodies. Header/JS-only technologies (Shopify, Next.js) are invisible this way by design.
-- **Do not** point a hosted online scanner at the target - it is active-by-proxy and leaks the asset.
-- **Extending:** each phase is a `PhaseN-*` function in `Invoke-AssetLens.ps1`. Add a source by writing into the matching `0N_` folder and calling `Add-OOS` for anything off-host.
-- `-Setup` installs Go tools to `%GOPATH%\bin`, Python tools to Python's `Scripts`, and retire.js to npm's global dir. AssetLens **adds these to PATH automatically at runtime**, so a normal run finds its tools even if they were never added to the system PATH.
+- **Keys** live in `config\keys.ps1` (git-ignored). Ship only `keys.example.ps1`; rotate any key that ever lands in a log.
+- **PowerShell, not Git Bash** — avoids MSYS path-mangling of slash args; HTTP via `Invoke-RestMethod`.
+- **Tech fingerprint** — a slimmed, MIT-licensed Wappalyzer ruleset (`config\wappalyzer.json`) matched **passively** against archived bodies; header/JS-only techs (Shopify, Next.js) are invisible this way by design.
+- **Extending** — each phase is a `PhaseN-*` function; write into the matching `0N_` folder and call `Add-OOS` for anything off-host.
+- **"running scripts is disabled"** — that's PowerShell's ExecutionPolicy: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run once with `powershell -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 <host>`. If a GPO scope (`MachinePolicy` / `UserPolicy`) blocks it, involve IT.
+- **A tool reads `MISSING` after `-Setup`** — PATH needs refreshing: open a new shell, run `-Setup -SkipBase`, then `-Validate`. (`waymore` / `uro` install via pip; on a bleeding-edge Python use 3.12 for prebuilt wheels.)
+- **Never** point a hosted online scanner at the target — that is active-by-proxy and leaks the asset.
 
-## Troubleshooting
-
-**"running scripts is disabled on this system"** - that is PowerShell's ExecutionPolicy, not AssetLens. Set it once for your user:
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
-or bypass per run (no system change):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 <host>
-```
-On a managed machine run `Get-ExecutionPolicy -List`: if the blocking scope is `MachinePolicy` or `UserPolicy` it is enforced by Group Policy and the above are overridden - involve IT or use an unmanaged machine.
-
-**A tool reads `MISSING` right after `-Setup`** - winget-installed runtimes need PATH refreshed. `-Setup` now refreshes PATH in-session automatically; if anything is still missing, open a new shell and run `.\Invoke-AssetLens.ps1 -Setup -SkipBase`, then `.\Invoke-AssetLens.ps1 -Validate`.
-
-**`waymore` / `uro` MISSING** - they install via pip into Python's `Scripts` folder, which AssetLens auto-adds at runtime, so this is usually a non-issue. If they truly failed to install (common on a brand-new Python):
-```powershell
-python -m pip install -U pip setuptools wheel
-python -m pip install --upgrade waymore uro
-```
-Still failing on a bleeding-edge Python (e.g. 3.14)? Install Python 3.12 (`winget install Python.Python.3.12`) - it has prebuilt wheels for every dependency.
-
-**Locked-down corporate laptop** - check `$ExecutionContext.SessionState.LanguageMode`. If it is `ConstrainedLanguage`, .NET one-liners like `[Environment]::SetEnvironmentVariable(...)` will fail - but AssetLens itself is Constrained-Language-Mode safe and never needs them.
-
----
+</details>
