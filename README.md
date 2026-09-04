@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#features">Features</a> •
+  <a href="#architecture">Architecture</a> •
   <a href="#installation">Installation</a> •
   <a href="#usage">Usage</a> •
   <a href="#running-assetlens">Running</a> •
@@ -47,6 +48,92 @@
 - **Self-contained report** - `Report.md` plus a `Report.html` dashboard with no CDN deps, so it opens anywhere offline
 - **Packaged output** - auto-zipped and SHA-256'd, with a ranked `Verify.md` worklist of suggested next checks
 - **PowerShell-native** - no WSL, no Git Bash; the keyless core works before you install anything
+
+## Architecture
+
+Everything flows one way. Third-party sources that have **already** scanned the target feed the passive pipeline (P1-P7), which writes a single evidence package. The target itself is only ever touched by the opt-in `-Probe` phase (P8), on authorised engagements.
+
+```mermaid
+flowchart TB
+    subgraph SRC["Public / third-party sources — they already scanned the target"]
+        direction LR
+        S1["Certificate<br/>Transparency"]
+        S2["Internet-scan DBs<br/>Shodan InternetDB"]
+        S3["Web archives<br/>Wayback · CommonCrawl"]
+        S4["Registries · DNS<br/>RDAP · M365"]
+        S5["Threat · breach feeds<br/>OTX · LeakIX · GitHub"]
+    end
+    subgraph AL["AssetLens — passive by default · zero packets to the target"]
+        direction LR
+        P1["P1<br/>Scope"] --> P2["P2<br/>Certs"] --> P3["P3<br/>Intel"] --> P4["P4<br/>Origin"] --> P5["P5<br/>History"] --> P6["P6<br/>JS mining"] --> P7["P7<br/>OSINT"]
+    end
+    subgraph OUT["Evidence package · output folder"]
+        direction LR
+        O1["Report.md<br/>+ Report.html"]
+        O2["Comparer_feed.txt"]
+        O3["raw artifacts<br/>+ manifest.sha256"]
+    end
+    TGT(["Target host<br/>never contacted in passive mode"])
+    P8["P8 · active liveness<br/>opt-in -Probe"]
+    SRC ==> AL
+    AL ==> OUT
+    AL -.-> P8
+    P8 -. "authorised targets only" .-> TGT
+    OUT --> RDL["RDL Comparer<br/>coverage vs filesystem"]
+    OUT --> VDI["VDI active testing<br/>nmap · Burp"]
+    classDef pass fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
+    classDef act fill:#fdf1d6,stroke:#d29922,color:#5a3d00;
+    classDef tgt fill:#fde0e0,stroke:#cf222e,color:#6e0b0b;
+    class P1,P2,P3,P4,P5,P6,P7 pass;
+    class P8 act;
+    class TGT tgt;
+```
+
+> **Legend** — 🟩 passive (zero packets to target) · 🟨 active, opt-in `-Probe` (authorised only) · 🟥 the target (never contacted in passive mode).
+
+### Data flow
+
+A single process, one trust boundary: everything the tool reads comes from public data stores; the only path to the target is the dashed, opt-in one.
+
+```mermaid
+flowchart LR
+    TESTER["Tester"]
+    SRC[("Public OSINT sources")]
+    TGT["Target host"]
+    PKG[("Evidence package")]
+    RDL["RDL Comparer"]
+    TESTER -->|"host + flags"| PROC(("AssetLens<br/>collect · mine · synthesise"))
+    SRC -->|"certs · scans · archives · records"| PROC
+    PROC -. "0 packets · passive" .-> TGT
+    PROC -->|"writes"| PKG
+    PKG -->|"report + worklist"| TESTER
+    PKG -->|"coverage feed"| RDL
+    classDef store fill:#eef2ff,stroke:#1f6feb,color:#0a2540;
+    classDef proc fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
+    class SRC,PKG store;
+    class PROC proc;
+```
+
+### Where it fits in an engagement
+
+Passive recon runs **outside** the client environment first; the sealed, hash-verified package is then carried **into** the secured VDI for the authorised active phase.
+
+```mermaid
+flowchart LR
+    subgraph OUTSIDE["Outside client env · passive · no authorisation"]
+        direction TB
+        A["1 · AssetLens passive recon"] --> B["2 · Scope and plan review"]
+    end
+    subgraph INSIDE["Inside secured VDI · authorised · hands-on"]
+        direction TB
+        C["3 · Active testing<br/>nmap · Burp · -Probe"] --> D["4 · Coverage check + report"]
+    end
+    B ==>|"carry the evidence package"| C
+    classDef pass fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
+    classDef act fill:#fdf1d6,stroke:#d29922,color:#5a3d00;
+    class A,B pass;
+    class C,D act;
+```
 
 ## Installation
 
