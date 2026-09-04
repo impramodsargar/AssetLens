@@ -6,12 +6,13 @@
 
 .DESCRIPTION
     Modes (keys live in config\keys.ps1, git-ignored - never in this script):
-      RECON  (default)  .\Invoke-AssetLens.ps1 app.target.com [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..]
+      RECON  (default)  .\Invoke-AssetLens.ps1 app.target.com [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..] [-Sow 314824]
                         (auto-zips the finished package + .zip.sha256; raw response bodies excluded - add -FullBodies to keep them)
+                        (-Sow <num> names the transfer zip citiva_<num>.zip - Citi VA deliverable convention - instead of <host>_<date>.zip)
       SETUP             .\Invoke-AssetLens.ps1 -Setup [-SkipBase]
       REPORT (rebuild)  .\Invoke-AssetLens.ps1 -Report -Package .\output\app.target.com_<date>
       MAP-UAT           .\Invoke-AssetLens.ps1 -MapUat -Package .\output\app.target.com_<date> -UatBase https://uat.target.com [-WithParams]
-      ZIP               .\Invoke-AssetLens.ps1 -Zip -Package .\output\app.target.com_<date> [-FullBodies]
+      ZIP               .\Invoke-AssetLens.ps1 -Zip -Package .\output\app.target.com_<date> [-FullBodies] [-Sow 314824]
       DIFF              .\Invoke-AssetLens.ps1 -Diff -Package .\output\<host>_<new> -Against .\output\<host>_<old>
       VALIDATE          .\Invoke-AssetLens.ps1 -Validate   (live-check API keys + tools; hits providers + benign IPs, no target)
       RE-RUN PHASE(S)   .\Invoke-AssetLens.ps1 -Package .\output\<host>_<date> -Phase P8 [-Probe]   (re-run phase(s) on an existing package; no re-discovery)
@@ -36,6 +37,7 @@ param(
     [switch]$WithParams,                        # MAP-UAT: use path+query URIs
     [switch]$Zip,                               # ZIP mode: zip an existing -Package (recon auto-zips its own output)
     [switch]$FullBodies,                        # ZIP: also include the raw 06_js\responses\ bodies (default: excluded - already mined)
+    [string]$Sow,                               # SOW number -> name the transfer zip citiva_<sow>.zip (Citi VA deliverable convention) instead of <host>_<date>.zip
     [switch]$Diff,                              # DIFF mode: compare -Package (new) against -Against (old)
     [string]$Against,                           # DIFF: the older/baseline package to compare against
     [string]$Burp,                              # BURP-DIFF mode: with -Package, a Burp sitemap URL txt -> discovered URLs NOT in Burp
@@ -619,13 +621,17 @@ function Invoke-MapUat {
 function New-PackageZip {
     # Build the transfer zip. By default EXCLUDE 06_js\responses\ (raw archived bodies already mined into
     # endpoints/secrets/retire.js) - they stay on local disk. Pass -FullBodies to include them.
-    param([Parameter(Mandatory = $true)][string]$Package, [switch]$FullBodies)
+    param([Parameter(Mandatory = $true)][string]$Package, [switch]$FullBodies, [string]$Sow)
     if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
     Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
     $base = (Resolve-Path $Package).Path.TrimEnd('\', '/')
     $name = Split-Path $base -Leaf
-    $zip  = "$base.zip"
+    # -Sow names the transfer zip citiva_<sow>.zip (Citi VA deliverable convention); default keeps <host>_<date>.zip.
+    # The folder INSIDE the zip stays the package name ($name) so the host/date identity is preserved.
+    $sowClean = if ($Sow) { $Sow -replace '[^A-Za-z0-9_.-]', '' } else { '' }
+    if ($Sow -and -not $sowClean) { Write-Host "  -Sow '$Sow' has no filename-safe characters; keeping default zip name" -ForegroundColor Yellow }
+    $zip  = if ($sowClean) { Join-Path (Split-Path $base -Parent) "citiva_$sowClean.zip" } else { "$base.zip" }
     if (Test-Path $zip) { Remove-Item $zip -Force }
     $respDir = Join-Path $base '06_js\responses'
     $files = Get-ChildItem $base -Recurse -File | Where-Object { $FullBodies -or -not $_.FullName.StartsWith($respDir, [System.StringComparison]::OrdinalIgnoreCase) }
@@ -789,7 +795,7 @@ function Invoke-BurpDiff {
 if ($Setup)  { Invoke-Setup -SkipBase:$SkipBase; return }
 if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; Write-ComparerFeed -Package $Package; return }
 if ($MapUat) { if (-not $Package -or -not $UatBase) { throw 'Use: -MapUat -Package <packageDir> -UatBase <url>' }; Invoke-MapUat -Package $Package -UatBase $UatBase -WithParams:$WithParams; return }
-if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies; return }
+if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies -Sow $Sow; return }
 if ($Diff)   { if (-not $Package -or -not $Against) { throw 'Use: -Diff -Package <newDir> -Against <oldDir>' }; Invoke-Diff -New $Package -Old $Against; return }
 if ($Burp)   { if (-not $Package) { throw 'Use: -Package <packageDir> -Burp <burp_sitemap_urls.txt>' }; Invoke-BurpDiff -Package $Package -BurpFile $Burp; return }
 if ($Validate) { Invoke-Validate; return }
@@ -1932,7 +1938,7 @@ Write-Log ('OOS assets noted: {0}  (see OOS_observed.txt)' -f $OOS.Count) $(if (
 $manifest = Get-ChildItem $pkg -Recurse -File | Where-Object { $_.Name -ne 'manifest.sha256' } |
     ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.FullName.Substring($pkg.Length + 1) }
 Save-Lines (Join-Path $pkg 'manifest.sha256') $manifest
-try { New-PackageZip -Package $pkg -FullBodies:$FullBodies } catch { Write-Host "zip failed: $($_.Exception.Message)" -ForegroundColor Yellow }
+try { New-PackageZip -Package $pkg -FullBodies:$FullBodies -Sow $Sow } catch { Write-Host "zip failed: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 Write-Host ''
 Write-Host '  Next: transfer the .zip (verify .zip.sha256), then work Verify.md' -ForegroundColor Cyan

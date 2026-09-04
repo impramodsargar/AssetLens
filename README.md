@@ -102,7 +102,7 @@ notepad .\config\keys.ps1
 | `.\Invoke-AssetLens.ps1 -Setup [-SkipBase]` | install the toolchain |
 | `.\Invoke-AssetLens.ps1 -Report -Package <dir>` | (re)build `Report.md` - pure local, no network |
 | `.\Invoke-AssetLens.ps1 -MapUat -Package <dir> -UatBase https://uat.host` | map URIs -> `uat_targets.txt` - pure local |
-| `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies]` | (re)zip a package for transfer; raw bodies excluded by default |
+| `.\Invoke-AssetLens.ps1 -Zip -Package <dir> [-FullBodies] [-Sow <num>]` | (re)zip a package for transfer; raw bodies excluded by default; `-Sow` names it `citiva_<num>.zip` |
 | `.\Invoke-AssetLens.ps1 -Diff -Package <new> -Against <old>` | diff two scans -> `Diff.md` (new CVEs/SANs/endpoints) |
 | `.\Invoke-AssetLens.ps1 -Package <dir> -Burp <sitemap_urls.txt>` | diff the feed against a Burp sitemap URL list -> `discovered_not_in_burp.txt` (what you found but haven't tested) - pure local |
 | `.\Invoke-AssetLens.ps1 -Validate` | preflight: live-check every API key + tool (hits providers + benign IPs, never a target) |
@@ -137,6 +137,7 @@ Output lands in `output\app.target.com_<date>\`, auto-zipped with a `.zip.sha256
 | `-Enum` | Opt-in subdomain enumeration (subfinder). **Off by default** - single-host scope. Only for wildcard / multi-host targets. |
 | `-Probe` | **ACTIVE liveness probe** (opt-in, off by default) of discovered in-scope URLs via `httpx`. Sends traffic to the target - **only where you are authorized.** Writes live URLs to `08_live\`. |
 | `-Rate <n>` | With `-Probe`: max requests/sec to the target (default 15). Set to your Rules-of-Engagement limit. |
+| `-Sow <num>` | Name the transfer zip **`citiva_<num>.zip`** (+ `.zip.sha256`) instead of `<host>_<date>.zip` - the Citi VA deliverable convention. Works on a RECON run or a standalone `-Zip`. The folder inside the zip keeps the `<host>_<date>` identity. |
 
 The chosen mode is recorded in `Index.md`.
 
@@ -199,6 +200,8 @@ Each recon run **auto-creates** `output\<host>_<date>.zip` + `.zip.sha256`. Re-z
 ```powershell
 .\Invoke-AssetLens.ps1 -Zip -Package output\<host>_<date>
 ```
+
+For a client deliverable, pass **`-Sow <num>`** (on the RECON run or the `-Zip` above) to name it **`citiva_<num>.zip`** + `.zip.sha256` instead of `<host>_<date>.zip` - the Citi VA convention. The `<host>_<date>` folder is still the top level inside the zip, so the package identity is preserved.
 
 Transfer the zip via your preferred channel and **verify the `.zip.sha256`** on the other side. Everything is plain text / JSON, so it is usable anywhere with nothing but a text editor - drive `Verify.md` from there.
 
