@@ -360,6 +360,12 @@ function Build-Report {
     if ($hot.Count) { foreach ($u in ($hot | Select-Object -First 60)) { W "- $u" }; if ($hot.Count -gt 60) { W ("- _...+{0} more in 05_history\all_urls.txt_" -f ($hot.Count - 60)) } }
     else { W "_No high-signal endpoints matched. Full list in 05_history\all_urls.txt._" }
     W ""
+    $gfLines = @()
+    foreach ($k in @('xss', 'sqli', 'ssrf', 'lfi', 'redirect', 'rce', 'ssti', 'idor')) { $n = @(GLines "06_js\gf\$k.txt").Count; if ($n) { $gfLines += ('- **{0}** - {1} URL(s) -> `06_js\gf\{0}.txt`' -f $k, $n) } }
+    if ($gfLines.Count) {
+        W "**By likely bug class** (in-scope param-URLs matched to gf-style patterns - test the parameter, not just the path):"; W ""
+        $gfLines | ForEach-Object { W $_ }; W ""
+    }
     $allParams = @(@($params) + @($xPar) | Sort-Object -Unique)
     if ($allParams.Count) { W (("**Parameters seen ({0}):** " -f $allParams.Count) + '`' + (($allParams | Select-Object -First 40) -join '`, `') + '`') }
     if (@($xEnd).Count) { W ""; W ("**Endpoints extracted from archived bodies: {0}** - see 06_js\endpoints.txt" -f @($xEnd).Count) }
@@ -922,6 +928,32 @@ function Get-WebSocketRefs {
     foreach ($m in [regex]::Matches($c, '(?i)wss?://[^\s"''<>()\\]{4,}'))                    { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
     foreach ($m in [regex]::Matches($c, '(?i)new\s+WebSocket\s*\(\s*["'']([^"''\\]{2,})["'']')) { [void]$sink.Add($m.Groups[1].Value) }
     foreach ($m in [regex]::Matches($c, '(?i)["''](/(?:[a-z0-9_\-.]+/)*(?:ws|wss|websocket|socket\.io|sockjs|cable|actioncable)(?:/[a-z0-9_\-./]*)?)(?=["''?])')) { [void]$sink.Add($m.Groups[1].Value) }
+}
+function Get-BugClassBuckets {
+    # gf-style triage: bucket param-bearing URLs by the bug class their QUERY-PARAMETER NAMES suggest - a native port
+    # of the common gf-patterns param lists (tomnomnom / 1ndianl33t). Passive, no external tool. The CALLER must pass
+    # only IN-SCOPE URLs (single-host discipline) - this just classifies. A URL lands in every class it matches (as gf does).
+    param([string[]]$Urls)
+    $cls = [ordered]@{
+        xss      = 'q s search id action keyword query page keywords url view cat name key p title data value input term redirect callback return message text html'
+        sqli     = 'id select report role update query user name sort where search params process row view table from sel results order keyword column field filter number delete'
+        ssrf     = 'url uri dest redirect host port path continue domain callback feed site proxy fetch open remote target image imageurl image_url source load window reference ref'
+        lfi      = 'file document folder root path pg style pdf template doc page dir download include inc locate show content layout conf log load read cat type'
+        redirect = 'url redirect redir return returnurl return_url returnto next dest destination continue out goto target rurl forward forward_url checkout_url go image_url redirect_uri redirect_url link'
+        rce      = 'cmd exec command execute ping query jump code reg do func arg option load process step read feature exe module payload run print system shell'
+        ssti     = 'template preview id view activity name content redirect q search query'
+        idor     = 'id user account number order no doc key email group profile edit report uid pid gid invoice userid user_id account_id file_id object_id oid'
+    }
+    $sets = @{}; foreach ($k in $cls.Keys) { $sets[$k] = @($cls[$k] -split ' ') }
+    $out = [ordered]@{}; foreach ($k in $cls.Keys) { $out[$k] = New-Object System.Collections.Generic.HashSet[string] }
+    foreach ($u in $Urls) {
+        $qi = ([string]$u).IndexOf('?'); if ($qi -lt 0) { continue }
+        $names = New-Object System.Collections.Generic.HashSet[string]
+        foreach ($kv in (($u.Substring($qi + 1)) -split '[&;]')) { $n = ($kv -split '=', 2)[0]; if ($n) { [void]$names.Add($n.ToLower()) } }
+        if (-not $names.Count) { continue }
+        foreach ($k in $cls.Keys) { foreach ($n in $names) { if ($sets[$k] -contains $n) { [void]$out[$k].Add($u); break } } }
+    }
+    return $out
 }
 function Get-JsluiceApiMap {
     # jsluice parses each JS file's AST and emits one record per call site: url + method + query/body params.
@@ -1575,6 +1607,19 @@ function Phase6-Js {
     $rjPath = Get-RawPath (Join-Path $jsDir 'retirejs.json')
     Invoke-Tool 'retire' @('--path', $respDir, '--outputformat', 'json', '--outputpath', $rjPath) | Out-Null
     if (Test-Path $rjPath) { Write-Log 'retire.js -> 06_js\_raw\retirejs.json' 'OK' }
+    # gf-style attack-surface bucketing: classify IN-SCOPE param-bearing URLs (extracted endpoints + P5 history) by
+    # likely bug class (xss/sqli/ssrf/lfi/redirect/rce/ssti/idor). Single-host only - off-host URLs are never bucketed.
+    $gfIn = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($u in $links) { if ($u -match '\?') { if ($u.StartsWith('/') -and -not $u.StartsWith('//')) { [void]$gfIn.Add($u) } elseif ($u -match '^https?://([^/:]+)' -and (Test-InScope $matches[1])) { [void]$gfIn.Add($u) } } }
+    $hf = Join-Path $pkg '05_history\urls_deduped.txt'
+    if (Test-Path $hf) { foreach ($u in (Get-Content $hf -ErrorAction SilentlyContinue)) { if ($u -match '\?' -and $u -match '^https?://([^/:]+)' -and (Test-InScope $matches[1])) { [void]$gfIn.Add($u) } } }
+    if ($gfIn.Count) {
+        $buckets = Get-BugClassBuckets @($gfIn)
+        $gfDir = Join-Path $jsDir 'gf'; New-Item -ItemType Directory -Force -Path $gfDir | Out-Null
+        $gfSum = @()
+        foreach ($k in $buckets.Keys) { if ($buckets[$k].Count) { Save-Lines (Join-Path $gfDir "$k.txt") (@($buckets[$k]) | Sort-Object); $gfSum += ('{0}={1}' -f $k, $buckets[$k].Count) } }
+        if ($gfSum.Count) { Write-Log ('gf buckets (in-scope param-URLs by bug class): {0} -> 06_js\gf\' -f ($gfSum -join ' ')) 'OK' }
+    }
 }
 
 function Phase7-Osint {

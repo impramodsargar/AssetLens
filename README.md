@@ -46,7 +46,7 @@ flowchart TB
         P3["P3 · Intel — InternetDB CVEs/CPEs · AbuseIPDB reputation"]
         P4["P4 · Origin — passive-DNS · CriminalIP/Quake cert→IP pivot (WAF bypass)"]
         P5["P5 · History — waymore + gau archives · uro dedup"]
-        P6["P6 · JS mining — endpoints · params · secrets · cloud · WebSockets ·<br/>source-map rebuild · DOM-XSS/postMessage/GraphQL · tech fingerprint"]
+        P6["P6 · JS mining — endpoints · params · secrets · cloud · WebSockets · source-map rebuild ·<br/>DOM-XSS/postMessage/GraphQL · gf bug-class buckets · tech fingerprint"]
         P7["P7 · OSINT — OTX · LeakIX · GitHub code+emails · breach-check · Tranco"]
         P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
     end
@@ -135,7 +135,7 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 | **P3 Intel** | Shodan-InternetDB **CVEs/CPEs** · AbuseIPDB reputation *(ports left to the in-VDI nmap scan)* | keyless |
 | **P4 Origin** | passive-DNS (VirusTotal · SecurityTrails) · **CriminalIP / Quake cert→IP pivot** (WAF bypass) · Netlas | keyed |
 | **P5 History** | `waymore` + `gau` archives (Wayback · CommonCrawl · OTX · URLScan) · `uro` dedup | keyless |
-| **P6 JS mining** | endpoints · params · wordlist · cloud assets · **WebSockets** · secrets (`trufflehog`/`gitleaks`/`jsluice` + custom patterns) · `retire.js` vuln-libs · Wappalyzer fingerprint · **source-map reconstruction** · jsluice AST **API map + DOM-XSS/postMessage/GraphQL deep pass** | keyless core |
+| **P6 JS mining** | endpoints · params · wordlist · cloud assets · **WebSockets** · secrets (`trufflehog`/`gitleaks`/`jsluice` + custom patterns) · `retire.js` vuln-libs · Wappalyzer fingerprint · **source-map reconstruction** · jsluice AST **API map + DOM-XSS/postMessage/GraphQL deep pass** · **gf-style bug-class buckets** (xss/sqli/ssrf/lfi/redirect/rce/ssti/idor) | keyless core |
 | **P7 OSINT** | AlienVault OTX · LeakIX · GitHub code + commit-emails · LeakCheck breach-check · Tranco · SpiderFoot | mixed |
 | **P8 Live** *(`-Probe`, active)* | `httpx` liveness · robots / sitemap / `.well-known` · live-JS re-mine · `.js.map` reconstruct → `08_live\` | active |
 
@@ -154,7 +154,7 @@ output/<host>_<date>/
   08_live/                  only with -Probe: live URLs · well-known · live JS + API map
 ```
 
-Everything is plain text / JSON — usable with nothing but a text editor. **`Comparer_feed.txt`** drops straight into a coverage tool to diff discovered-vs-tested; `-Burp <urls.txt>` runs that diff locally → `discovered_not_in_burp.txt`.
+Everything is plain text / JSON — usable with nothing but a text editor. **`Comparer_feed.txt`** drops straight into a coverage tool to diff discovered-vs-tested; `-Burp <urls.txt>` runs that diff locally → `discovered_not_in_burp.txt`. **`06_js\gf\`** buckets in-scope param-URLs by likely bug class (`xss/sqli/ssrf/lfi/redirect/rce/ssti/idor`) so you test the parameter, not just the path.
 
 ## API keys
 
@@ -175,7 +175,16 @@ The target is **one host**. Everything else the tools surface — SANs, subdomai
 - **PowerShell, not Git Bash** — avoids MSYS path-mangling of slash args; HTTP via `Invoke-RestMethod`.
 - **Tech fingerprint** — a slimmed, MIT-licensed Wappalyzer ruleset (`config\wappalyzer.json`) matched **passively** against archived bodies; header/JS-only techs (Shopify, Next.js) are invisible this way by design.
 - **Extending** — each phase is a `PhaseN-*` function; write into the matching `0N_` folder and call `Add-OOS` for anything off-host.
-- **"running scripts is disabled"** — that's PowerShell's ExecutionPolicy: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run once with `powershell -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 <host>`. If a GPO scope (`MachinePolicy` / `UserPolicy`) blocks it, involve IT.
+- **"running scripts is disabled" / "…is not digitally signed"** — PowerShell's ExecutionPolicy plus the downloaded-file (**Mark-of-the-Web**) block on a script pulled from a GitHub zip. Fix it once:
+  ```powershell
+  Get-ChildItem -Recurse .\ | Unblock-File          # clear the "downloaded from internet" flag
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+  ```
+  Or run a single invocation past the block with no system change:
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 -Setup
+  ```
+  In a signed-script shop, **code-sign** `Invoke-AssetLens.ps1` and it runs clean under RemoteSigned. If a GPO scope (`MachinePolicy` / `UserPolicy`) enforces the policy (`Get-ExecutionPolicy -List`), that overrides all of the above — involve IT or use an unmanaged box.
 - **A tool reads `MISSING` after `-Setup`** — PATH needs refreshing: open a new shell, run `-Setup -SkipBase`, then `-Validate`. (`waymore` / `uro` install via pip; on a bleeding-edge Python use 3.12 for prebuilt wheels.)
 - **jsluice** — the AST JS analysis (API map + deep pass) is built from source with cgo, so `-Setup` installs a C compiler (WinLibs mingw, via winget) to build it. On a locked-down box without winget, install any C compiler, then `CGO_ENABLED=1 go install github.com/BishopFox/jsluice/cmd/jsluice@latest`.
 - **Never** point a hosted online scanner at the target — that is active-by-proxy and leaks the asset.
