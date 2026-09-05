@@ -250,7 +250,9 @@ function Build-Report {
     $cpes  = @(); if ($idb.cpes)  { $cpes  = @($idb.cpes) }
 
     $sig = '(?i)(/admin|/api|/auth|/login|/logout|/signup|/register|password|reset|token|oauth|/sso|upload|/download|/config|/setting|debug|/internal|/private|graphql|/gql|swagger|openapi|\.json|\.xml|\.env|backup|/export|/import|/payment|/invoice|/account|webhook|/callback|redirect)'
-    $hot = @($dedupUrls | Where-Object { $_ -match $sig } | Sort-Object -Unique)
+    # high-signal endpoints, restricted to the IN-SCOPE host (off-host siblings stay in OOS, never the attack surface / queue).
+    # Uses $host_ (derived from the package) not Test-InScope, since $Target/$InScope aren't set in -Report mode.
+    $hot = @($dedupUrls | Where-Object { $_ -match $sig } | Where-Object { if ($_ -match '^https?://([^/]+)') { (($matches[1] -split ':')[0]).ToLower() -eq $host_.ToLower() } else { $true } } | Sort-Object -Unique)
 
 
     W "# Recon Report - $host_"
@@ -458,15 +460,41 @@ function Build-Report {
     $oosClean = @($oos)
     W ("{0} off-host asset(s) recorded in OOS_observed.txt. Not in scope." -f $oosClean.Count)
     W ""
-    W "## 8. Prioritized next actions"
-    W "1. **Probe origin candidates** with httpx + screenshot - any that serve the app bypass the CDN/WAF."
-    W "2. **Run the nmap port/service scan** (in-VDI), then match the service versions against the CVEs above."
-    W "3. **Replay prod URIs on UAT** - ``Invoke-AssetLens.ps1 -MapUat -UatBase https://<uat-host>`` -> uat_targets.txt, then ``httpx -l uat_targets.txt`` / nuclei. UAT is never crawled, so these harvested paths ARE your endpoint list."
-    W "4. **Hit the high-signal endpoints** (section 4) - load uris.txt + params into Burp Intruder (payload positions); katana to crawl from there. Don't blind-fuzz."
-    W "5. **Validate every secret** in section 5 (live? still valid?)."
-    W "6. **Review in-scope cert SANs** for alternate names of the same app."
-    W ""
-    W "_Passive package. Nothing in OOS_observed.txt is in scope._"
+    W "## 8. Priority testing queue"
+    W "_What to hit first, ranked from AssetLens's own signals. **Discovery != confirmation** - live-verify before you report anything._"; W ""
+    $livePathSet2 = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($lu in $liveUrls) { try { [void]$livePathSet2.Add(([uri]$lu).AbsolutePath.TrimEnd('/').ToLower()) } catch {} }
+    $p1 = New-Object System.Collections.Generic.List[string]; $p2 = New-Object System.Collections.Generic.List[string]; $p3 = New-Object System.Collections.Generic.List[string]
+    # P1 - live-confirmed / high-value / confirmed-bad
+    if ($thVer.Count) { $p1.Add(("**{0} VERIFIED secret(s)** (trufflehog) - live credentials, act now (section 5)" -f $thVer.Count)) }
+    if ($glSpec.Count) { $p1.Add(("**{0} gitleaks specific-rule hit(s)** - investigate (section 5)" -f $glSpec.Count)) }
+    if (@((GLines '01_scope\dns_security.txt') | Where-Object { $_ -match 'AXFR: ZONE TRANSFER ALLOWED' }).Count) { $p1.Add('**AXFR zone transfer ALLOWED** - dump the full zone (01_scope\dns_security.txt)') }
+    if (@($smSrc).Count) { $p1.Add(("**Source maps expose original source** ({0} path(s)) - 06_js\srcmap_src\ (internal routes/logic)" -f @($smSrc).Count)) }
+    $liveWrite = @(); foreach ($a in (@($jsApi) + @($liveApi))) { if ($a -match '^\s*(POST|PUT|PATCH|DELETE)\s+(\S+)') { $pp = (($matches[2] -split '\?', 2)[0]).TrimEnd('/').ToLower(); if ($livePathSet2.Count -and $livePathSet2.Contains($pp)) { $liveWrite += ('{0} {1}' -f $matches[1], $matches[2]) } } }
+    foreach ($w in (@($liveWrite | Sort-Object -Unique) | Select-Object -First 12)) { $p1.Add(("live **{0}** - state-changing, confirmed present" -f $w)) }
+    $liveHot = @($hot | Where-Object { $up = ''; try { $up = ([uri]$_).AbsolutePath.TrimEnd('/').ToLower() } catch {}; $livePathSet2.Count -and $livePathSet2.Contains($up) })
+    foreach ($h in ($liveHot | Select-Object -First 12)) { $p1.Add("live $h") }
+    # P2 - notable but unverified / lower-confidence
+    if (@($cands).Count) { $p2.Add(("{0} origin candidate(s) behind the CDN - PASSIVE, verify each serves the app directly (WAF bypass)" -f @($cands).Count)) }
+    $archHot = @($hot | Where-Object { $up = ''; try { $up = ([uri]$_).AbsolutePath.TrimEnd('/').ToLower() } catch {}; -not ($livePathSet2.Count -and $livePathSet2.Contains($up)) })
+    if ($archHot.Count) { $p2.Add(("{0} archived high-signal endpoint(s) (admin/api/auth/upload/...) - confirm live first (section 4)" -f $archHot.Count)) }
+    $gfTot = 0; foreach ($k in @('xss', 'sqli', 'ssrf', 'lfi', 'redirect', 'rce', 'ssti', 'idor')) { $gfTot += @(GLines "06_js\gf\$k.txt").Count }
+    if ($gfTot) { $p2.Add('param-URLs bucketed by likely bug class (06_js\gf\) - TRIAGE ONLY, load into Burp Intruder') }
+    if (@($vulns).Count) { $p2.Add(("{0} InternetDB CVE(s) - version-check the live services (section 2)" -f @($vulns).Count)) }
+    if ($libs.Count) { $p2.Add(("{0} vulnerable JS lib(s) (retire.js) - confirm live versions (section 2)" -f $libs.Count)) }
+    if ($wsN) { $p2.Add(("{0} WebSocket endpoint(s) - manual WS testing (06_js\websockets.txt)" -f $wsN)) }
+    if (@($apiEp).Count) { $p2.Add(("{0} OpenAPI/Swagger endpoint(s) - full contract recovered (06_js)" -f @($apiEp).Count)) }
+    # P3 - context / low-confidence
+    if (@($ghHits).Count) { $p3.Add(("{0} GitHub code hit(s) - review for leaked config/paths (07_osint)" -f @($ghHits).Count)) }
+    if ($thUnv.Count -or $glGen.Count) { $p3.Add('low-confidence secret matches (likely FP on minified/archived JS) - spot-check, don''t trust the count') }
+    if (@($dedupUrls).Count) { $p3.Add(("{0} historical URL(s) after dedup - the broad archived surface (05_history)" -f @($dedupUrls).Count)) }
+    $tiers = @(
+        [pscustomobject]@{ t = 'Priority 1 - test first (live-confirmed / high-value / confirmed-bad)'; items = $p1 },
+        [pscustomobject]@{ t = 'Priority 2 - notable (unverified or lower-confidence)'; items = $p2 },
+        [pscustomobject]@{ t = 'Priority 3 - context / low-confidence'; items = $p3 }
+    )
+    foreach ($tier in $tiers) { W ("**{0}**" -f $tier.t); W ""; if (@($tier.items).Count) { foreach ($it in $tier.items) { W "- $it" } } else { W "- _(nothing in this tier)_" }; W "" }
+    W "_How to test: replay prod URIs onto UAT via ``-MapUat``; load endpoints + params into Burp Intruder (no blind fuzz); run the nmap / TLS scan in-VDI; validate every secret. **Nothing in OOS_observed.txt is in scope.**_"
     [System.IO.File]::WriteAllText((P 'Report.md'), ($out -join "`r`n"), $u8)
 
     # ============ HTML report (dashboard layout; self-contained, no external deps, light/dark adaptive) ============
