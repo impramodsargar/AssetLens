@@ -145,7 +145,7 @@ Missing a tool or key? That step logs `SKIP` and the run continues — coverage 
 
 ```
 output/<host>_<date>/
-  Report.md · Report.html   readable brief + offline dashboard   (READ FIRST)
+  Report.md · Report.html   readable brief + dashboard: historical-vs-live coverage, [LIVE] endpoint provenance, prioritised (READ FIRST)
   Comparer_feed.txt         deduped in-scope URLs → your coverage tool (Burp-vs-RDL)
   Verify.md                 ranked worklist of next checks
   OOS_observed.txt          off-host assets, flagged DO NOT TEST

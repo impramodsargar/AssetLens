@@ -291,6 +291,27 @@ function Build-Report {
         }
         W ""
     }
+    W "## Recon coverage"
+    $wsN = @(@(GLines '06_js\websockets.txt') + @(GLines '08_live\live_websockets.txt') | Sort-Object -Unique).Count
+    $liveJsN = @(Get-ChildItem (P '08_live\js') -File -ErrorAction SilentlyContinue).Count
+    W "| Surface | Count |"; W "|---|---|"
+    W ("| Archived URLs | {0} |" -f @($allUrls).Count)
+    W ("| Deduplicated URLs | {0} |" -f @($dedupUrls).Count)
+    W ("| Archived JS files | {0} |" -f @($jsUrls).Count)
+    W ("| JS-derived endpoints | {0} |" -f @($xEnd).Count)
+    W ("| API map (method + params) | {0} |" -f (@($jsApi).Count + @($liveApi).Count))
+    W ("| OpenAPI endpoints | {0} |" -f @($apiEp).Count)
+    W ("| WebSocket endpoints | {0} |" -f $wsN)
+    W ("| Source-map sources | {0} |" -f @($smSrc).Count)
+    W ("| **Live-verified URLs** | **{0}** |" -f @($liveUrls).Count)
+    if ($liveJsN) { W ("| Live JS files | {0} |" -f $liveJsN) }
+    W ""
+    if (@($liveUrls).Count) {
+        W ("**Current-state coverage: VERIFIED** - {0} URL(s) confirmed live via ``-Probe`` (2xx / 3xx / 401 / 403). Everything else is **historical** - an archived endpoint is not proof it still exists." -f @($liveUrls).Count)
+    } else {
+        W "**Current-state coverage: HISTORICAL ONLY** - nothing has been verified against the live target. These are archived / passive discoveries; **an archived endpoint is not proof it currently exists.** Run ``-Probe`` (authorised targets only) to confirm current state."
+    }
+    W ""
     W "## 1. Technology & DNS"
     W "_Ports & services: run the separate nmap scan (in-VDI). This report covers the passive tech/CVE/DNS surface only._"
     if (@($dns).Count) {
@@ -357,19 +378,27 @@ function Build-Report {
         W "IPs presenting the target's cert on non-CDN addresses - **probe each to see if it serves the app directly (WAF bypass).** InternetDB CVEs/tech shown to prioritise (nmap the ports in-VDI):"; W ""
         $cShow = if (@($candsEnr).Count) { $candsEnr } else { $cands }
         foreach ($c in $cShow) { W "- ``$c``" }
+        W ""; W "> **PASSIVE CANDIDATES - LIVE VERIFICATION REQUIRED.** These come from historical / passive-DNS + certificate correlation; an old IP is not necessarily the current origin. Confirm each actually serves the app before trusting it."
     } else { W "_No distinct origin candidates found._" }
     W ""
     W "## 4. Attack surface - high-signal endpoints"
     W ("Filtered from {0} URLs ({1} after uro pattern-dedup) down to the interesting ones (admin/api/auth/upload/config/etc.):" -f @($allUrls).Count, @($dedupUrls).Count)
     W ""
-    if ($hot.Count) { foreach ($u in ($hot | Select-Object -First 60)) { W "- $u" }; if ($hot.Count -gt 60) { W ("- _...+{0} more in 05_history\all_urls.txt_" -f ($hot.Count - 60)) } }
+    if ($hot.Count) {
+        $livePathSet = New-Object System.Collections.Generic.HashSet[string]
+        foreach ($lu in $liveUrls) { try { [void]$livePathSet.Add(([uri]$lu).AbsolutePath.TrimEnd('/').ToLower()) } catch {} }
+        foreach ($u in ($hot | Select-Object -First 60)) { $up = ''; try { $up = ([uri]$u).AbsolutePath.TrimEnd('/').ToLower() } catch {}; $tag = if ($livePathSet.Count -and $up -and $livePathSet.Contains($up)) { ' `[LIVE]`' } else { '' }; W "- $u$tag" }
+        if ($hot.Count -gt 60) { W ("- _...+{0} more in 05_history\all_urls.txt_" -f ($hot.Count - 60)) }
+        if ($livePathSet.Count) { W ""; W "_``[LIVE]`` = confirmed present via -Probe; untagged = archived / passive, **not confirmed current**._" }
+    }
     else { W "_No high-signal endpoints matched. Full list in 05_history\all_urls.txt._" }
     W ""
     $gfLines = @()
     foreach ($k in @('xss', 'sqli', 'ssrf', 'lfi', 'redirect', 'rce', 'ssti', 'idor')) { $n = @(GLines "06_js\gf\$k.txt").Count; if ($n) { $gfLines += ('- **{0}** - {1} URL(s) -> `06_js\gf\{0}.txt`' -f $k, $n) } }
     if ($gfLines.Count) {
-        W "**By likely bug class** (in-scope param-URLs matched to gf-style patterns - test the parameter, not just the path):"; W ""
+        W "**By likely bug class** (in-scope param-URLs matched to gf-style patterns):"; W ""
         $gfLines | ForEach-Object { W $_ }; W ""
+        W "> _**TRIAGE ONLY - NOT confirmed vulnerabilities.** A URL in ``ssrf.txt`` has an SSRF-*shaped* parameter, not a proven SSRF. These bucket the attack surface to prioritise manual testing - test the parameter, don't report the bucket._"; W ""
     }
     $allParams = @(@($params) + @($xPar) | Sort-Object -Unique)
     if ($allParams.Count) { W (("**Parameters seen ({0}):** " -f $allParams.Count) + '`' + (($allParams | Select-Object -First 40) -join '`, `') + '`') }
