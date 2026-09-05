@@ -539,6 +539,21 @@ function Build-Report {
     HW ('<div class="tile"><div class="l">out-of-scope</div><div class="n">{0}</div></div>' -f $oosClean.Count)
     if ($hasLive) { HW ('<div class="tile"><div class="l">live URLs</div><div class="n" style="color:var(--ok)">{0}</div></div>' -f @($liveUrls).Count) }
     HW '</div>'
+    # priority testing queue (reuses $p1/$p2/$p3 built for the markdown report) - the actionable centerpiece, up top
+    HW '<div class="card"><h2>priority testing queue</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:4px">Ranked from AssetLens signals &middot; discovery &ne; confirmation - live-verify before reporting.</div>'
+    foreach ($tq in @([pscustomobject]@{ n = 'Priority 1 &middot; test first'; c = 'var(--dn)'; items = $p1 }, [pscustomobject]@{ n = 'Priority 2 &middot; notable'; c = 'var(--wn)'; items = $p2 }, [pscustomobject]@{ n = 'Priority 3 &middot; context'; c = 'var(--muted)'; items = $p3 })) {
+        HW ('<div style="font-weight:700;color:{0};font-size:12px;letter-spacing:.3px;margin-top:8px">{1}</div>' -f $tq.c, $tq.n)
+        if (@($tq.items).Count) { HW '<ul style="margin:3px 0 4px;padding-left:18px;font-size:13px;line-height:1.6">'; foreach ($it in $tq.items) { $x = HE $it; $x = $x -replace '\*\*(.+?)\*\*', '<b>$1</b>' -replace '`(.+?)`', '<code style="font-size:12px">$1</code>'; HW "<li>$x</li>" }; HW '</ul>' } else { HW '<div class="muted" style="font-size:12px;margin:2px 0">(nothing in this tier)</div>' }
+    }
+    HW '</div>'
+    # recon coverage: historical vs live at a glance
+    HW '<div class="card"><h2>recon coverage &middot; historical vs live</h2>'
+    HW '<div style="display:flex;flex-wrap:wrap;gap:5px 14px;font-size:13px">'
+    foreach ($cp in @(@('archived URLs', @($allUrls).Count), @('deduped', @($dedupUrls).Count), @('archived JS', @($jsUrls).Count), @('JS endpoints', @($xEnd).Count), @('API map', (@($jsApi).Count + @($liveApi).Count)), @('OpenAPI', @($apiEp).Count), @('WebSockets', $wsN), @('source-maps', @($smSrc).Count), @('LIVE-verified', @($liveUrls).Count))) { $hl = $(if ($cp[0] -eq 'LIVE-verified') { ' style="color:var(--ok);font-weight:600"' } else { '' }); HW ('<span{2}><span class="muted">{0}</span> {1}</span>' -f $cp[0], $cp[1], $hl) }
+    HW '</div>'
+    HW ('<div style="font-size:12px;margin-top:8px">{0}</div>' -f $(if (@($liveUrls).Count) { ('<span style="color:var(--ok);font-weight:600">Current-state: VERIFIED</span> - {0} live; the rest are historical (not proof they still exist).' -f @($liveUrls).Count) } else { '<span style="color:var(--wn);font-weight:600">Current-state: HISTORICAL ONLY</span> - nothing verified live; run -Probe (authorised) to confirm.' }))
+    HW '</div>'
     if ($hasLive) {
         HW '<div class="card"><h2>live / active surface &middot; -Probe</h2>'
         HW ('<div class="muted" style="font-size:13px">httpx probed <span style="color:var(--text);font-weight:500">{0}</span> in-scope URL(s) &rarr; <span style="color:var(--ok);font-weight:600">{1}</span> live (2xx/3xx/401/403) &middot; coverage-compare feed</div>' -f @($liveCands).Count, @($liveUrls).Count)
@@ -609,7 +624,8 @@ function Build-Report {
     if ($cpes.Count) { HW ('<div class="muted" style="font-size:13px">tech: {0}</div>' -f (HE (($cpes | Select-Object -First 6) -join ', '))) }
     if (@($dns).Count) {
         $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
-        HW ('<div style="font-size:13px;margin-top:6px">DNS / mail: SPF <span style="color:{0};font-weight:500">{1}</span> &middot; DMARC <span style="color:{2};font-weight:500">{3}</span></div>' -f $(if ($spfMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($spfMiss) { 'missing' } else { 'ok' }), $(if ($dmarcMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($dmarcMiss) { 'missing' } else { 'ok' }))
+        HW ('<div style="font-size:13px;margin-top:6px">DNS / mail: SPF <span style="color:{0};font-weight:500">{1}</span> &middot; DMARC <span style="color:{2};font-weight:500">{3}</span>{4}</div>' -f $(if ($spfMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($spfMiss) { 'missing' } else { 'ok' }), $(if ($dmarcMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($dmarcMiss) { 'missing' } else { 'ok' }), $(if (@($dsec).Count) { (' &middot; DNSSEC <span style="color:{0};font-weight:500">{1}</span> &middot; CAA <span style="color:{2};font-weight:500">{3}</span>' -f $(if ($unsigned) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($unsigned) { 'unsigned' } else { 'signed' }), $(if ($noCaa) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($noCaa) { 'none' } else { 'set' })) } else { '' }))
+        if (@($axfr).Count) { HW '<div style="font-size:13px;margin-top:6px;color:var(--dn);font-weight:600">&#9888; AXFR zone transfer ALLOWED - the full DNS zone is dumpable</div>' }
     }
     HW '</div>'
     if (@($tech).Count) {
@@ -632,7 +648,14 @@ function Build-Report {
         HW '<div class="card"><h2>origin candidates - WAF bypass</h2>'
         $cShow = $(if (@($candsEnr).Count) { $candsEnr } else { $cands })
         $cfirst = $true
-        foreach ($c in $cShow) { $rtop = $(if ($cfirst) { ' style="border-top:none"' } else { '' }); $cfirst = $false; HW ('<div class="row mono"{0}><span style="font-size:13px">{1}</span></div>' -f $rtop, (HE $c)) }
+        foreach ($c in $cShow) {
+            $rtop = $(if ($cfirst) { ' style="border-top:none"' } else { '' }); $cfirst = $false
+            $conf = if ($c -match '\[(HIGH|MEDIUM|LOW[^\]]*)\]') { $matches[1] } else { '' }
+            $bcol = switch -Regex ($conf) { '^HIGH' { 'var(--dn)' } '^MEDIUM' { 'var(--wn)' } default { 'var(--muted)' } }
+            $badge = $(if ($conf) { ('<span class="pill" style="background:var(--tile);color:{0};font-weight:600;font-size:11px;margin-right:6px">{1}</span>' -f $bcol, (HE $conf)) } else { '' })
+            HW ('<div class="row mono"{0}>{1}<span style="font-size:13px">{2}</span></div>' -f $rtop, $badge, (HE $c))
+        }
+        HW '<div class="muted" style="font-size:12px;margin-top:6px">PASSIVE candidates - live-verify; an old / passive IP is not necessarily the current origin.</div>'
         HW '</div>'
     }
     if (@($apiEp).Count -or @($apiRefs).Count -or @($jsApi).Count) {
