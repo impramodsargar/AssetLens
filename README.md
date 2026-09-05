@@ -66,7 +66,6 @@ flowchart TB
     subgraph HAND["HANDOFF"]
         direction LR
         RDL["RDL Comparer<br/>coverage vs filesystem"]
-        BURP["-Burp diff<br/>not-in-Burp"]
         UAT["-MapUat<br/>UAT replay"]
         VDI["VDI active test<br/>nmap · Burp"]
     end
@@ -77,7 +76,7 @@ flowchart TB
     PASSIVE -.-> P8
     P8 -. "authorised" .-> TGT
     P8 ==> OUT
-    OUT --> RDL & BURP & UAT & VDI
+    OUT --> RDL & UAT & VDI
 
     classDef pass fill:#dff5e6,stroke:#2ea44f,color:#0b3d1a;
     classDef act fill:#fdf1d6,stroke:#d29922,color:#5a3d00;
@@ -113,7 +112,6 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 | `... -Report -Package <dir>` | rebuild `Report.md` — pure-local |
 | `... -Zip -Package <dir> [-Sow <n>]` | (re)zip for transfer; `-Sow` names it `citiva_<n>.zip` |
 | `... -Diff -Package <new> -Against <old>` | diff two scans → `Diff.md` |
-| `... -Package <dir> -Burp <urls.txt>` | feed vs Burp sitemap → `discovered_not_in_burp.txt` |
 | `... -MapUat -Package <dir> -UatBase <url>` | replay discovered URIs onto a UAT host |
 | `... -Package <dir> -Phase P5,P6 [-Probe]` | re-run phase(s) on a package, no re-discovery |
 
@@ -154,7 +152,7 @@ output/<host>_<date>/
   08_live/                  only with -Probe: live URLs · well-known · live JS + API map
 ```
 
-Everything is plain text / JSON — usable with nothing but a text editor. **`Comparer_feed.txt`** drops straight into a coverage tool to diff discovered-vs-tested; `-Burp <urls.txt>` runs that diff locally → `discovered_not_in_burp.txt`. **`06_js\gf\`** buckets in-scope param-URLs by likely bug class (`xss/sqli/ssrf/lfi/redirect/rce/ssti/idor`) so you test the parameter, not just the path.
+Everything is plain text / JSON — usable with nothing but a text editor. **`08_live\live_urls.txt`** is every live URL the `-Probe` pass confirmed — the list to load into your external Burp/RDL coverage-compare tool; **`Comparer_feed.txt`** is the broader discovered-URL union (historical + JS + live) if you'd rather diff discovered-vs-tested. **`06_js\gf\`** buckets in-scope param-URLs by likely bug class (`xss/sqli/ssrf/lfi/redirect/rce/ssti/idor`) so you test the parameter, not just the path.
 
 ## API keys
 
