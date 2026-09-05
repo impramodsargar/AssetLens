@@ -470,12 +470,13 @@ function Build-Report {
     if ($glSpec.Count) { $p1.Add(("**{0} gitleaks specific-rule hit(s)** - investigate (section 5)" -f $glSpec.Count)) }
     if (@((GLines '01_scope\dns_security.txt') | Where-Object { $_ -match 'AXFR: ZONE TRANSFER ALLOWED' }).Count) { $p1.Add('**AXFR zone transfer ALLOWED** - dump the full zone (01_scope\dns_security.txt)') }
     if (@($smSrc).Count) { $p1.Add(("**Source maps expose original source** ({0} path(s)) - 06_js\srcmap_src\ (internal routes/logic)" -f @($smSrc).Count)) }
+    foreach ($o in (@($candsEnr | Where-Object { $_ -match '\[HIGH\]' }) | Select-Object -First 5)) { $p1.Add(("**HIGH-confidence origin candidate** ``{0}`` - verify it serves the app directly (WAF bypass)" -f (($o -split '\s{2,}')[0]))) }
     $liveWrite = @(); foreach ($a in (@($jsApi) + @($liveApi))) { if ($a -match '^\s*(POST|PUT|PATCH|DELETE)\s+(\S+)') { $pp = (($matches[2] -split '\?', 2)[0]).TrimEnd('/').ToLower(); if ($livePathSet2.Count -and $livePathSet2.Contains($pp)) { $liveWrite += ('{0} {1}' -f $matches[1], $matches[2]) } } }
     foreach ($w in (@($liveWrite | Sort-Object -Unique) | Select-Object -First 12)) { $p1.Add(("live **{0}** - state-changing, confirmed present" -f $w)) }
     $liveHot = @($hot | Where-Object { $up = ''; try { $up = ([uri]$_).AbsolutePath.TrimEnd('/').ToLower() } catch {}; $livePathSet2.Count -and $livePathSet2.Contains($up) })
     foreach ($h in ($liveHot | Select-Object -First 12)) { $p1.Add("live $h") }
     # P2 - notable but unverified / lower-confidence
-    if (@($cands).Count) { $p2.Add(("{0} origin candidate(s) behind the CDN - PASSIVE, verify each serves the app directly (WAF bypass)" -f @($cands).Count)) }
+    if (@($cands).Count) { $p2.Add(("{0} origin candidate(s) behind the CDN (confidence-scored in section 3; HIGH ones promoted to P1) - PASSIVE, live-verify" -f @($cands).Count)) }
     $archHot = @($hot | Where-Object { $up = ''; try { $up = ([uri]$_).AbsolutePath.TrimEnd('/').ToLower() } catch {}; -not ($livePathSet2.Count -and $livePathSet2.Contains($up)) })
     if ($archHot.Count) { $p2.Add(("{0} archived high-signal endpoint(s) (admin/api/auth/upload/...) - confirm live first (section 4)" -f $archHot.Count)) }
     $gfTot = 0; foreach ($k in @('xss', 'sqli', 'ssrf', 'lfi', 'redirect', 'rce', 'ssti', 'idor')) { $gfTot += @(GLines "06_js\gf\$k.txt").Count }
@@ -1445,19 +1446,21 @@ function Phase3-Scan {
 function Phase4-Origin {
     param($IP)
     Write-Log 'P4  origin behind CDN'
-    $cand = New-Object System.Collections.Generic.List[string]
+    # track WHICH provider found each candidate IP (cert-pivot vs passive-DNS) so confidence can be scored per candidate
+    $candSrc = @{}
+    function _AddCand { param($cip, $src) $cip = [string]$cip; if (-not $cip) { return }; if (-not $candSrc.ContainsKey($cip)) { $candSrc[$cip] = New-Object System.Collections.Generic.HashSet[string] }; [void]$candSrc[$cip].Add($src) }
     if (Have-Key 'VirusTotal') {
         $vt = Invoke-Json "https://www.virustotal.com/api/v3/domains/$Target" @{ 'x-apikey' = $Keys.VirusTotal }
         if ($vt) {
             Save-Json (Join-Path $pkg '04_origin\vt_domain.json') $vt
-            foreach ($rec in $vt.data.attributes.last_dns_records) { if ($rec.type -eq 'A') { [void]$cand.Add([string]$rec.value) } }
+            foreach ($rec in $vt.data.attributes.last_dns_records) { if ($rec.type -eq 'A') { _AddCand $rec.value 'passive-DNS:VirusTotal' } }
         }
     }
     if (Have-Key 'SecurityTrails') {
         $st = Invoke-Json "https://api.securitytrails.com/v1/history/$Target/dns/a" @{ 'APIKEY' = $Keys.SecurityTrails }
         if ($st) {
             Save-Json (Join-Path $pkg '04_origin\securitytrails_history.json') $st
-            foreach ($r in $st.records) { foreach ($v in $r.values) { if ($v.ip) { [void]$cand.Add([string]$v.ip) } } }
+            foreach ($r in $st.records) { foreach ($v in $r.values) { if ($v.ip) { _AddCand $v.ip 'passive-DNS:SecurityTrails' } } }
         }
     }
     # Direct engine cert->IP origin pivot (replaces uncover). Free engines, each Have-Key gated.
@@ -1465,7 +1468,7 @@ function Phase4-Origin {
         $ci = Invoke-Json ('https://api.criminalip.io/v1/banner/search?query={0}&offset=0' -f [uri]::EscapeDataString('ssl_subject_common_name: ' + $Target)) @{ 'x-api-key' = $Keys.CriminalIP }
         if ($ci -and $ci.data.result) {
             Save-Json (Join-Path $pkg '04_origin\criminalip.json') $ci.data.result
-            foreach ($h in $ci.data.result) { if ($h.ip_address) { [void]$cand.Add([string]$h.ip_address) } }
+            foreach ($h in $ci.data.result) { if ($h.ip_address) { _AddCand $h.ip_address 'cert-pivot:CriminalIP' } }
             Write-Log ('CriminalIP cert hits: {0}' -f @($ci.data.result).Count) 'OK'
         }
     }
@@ -1475,7 +1478,7 @@ function Phase4-Origin {
             $qk = Invoke-RestMethod 'https://quake.360.net/api/v3/search/quake_service' -Method Post -Headers @{ 'X-QuakeToken' = $Keys.Quake } -ContentType 'application/json' -Body $qb -TimeoutSec 30 -ErrorAction Stop
             if ($qk.code -eq 0 -and $qk.data) {
                 Save-Json (Join-Path $pkg '04_origin\quake.json') $qk.data
-                foreach ($h in $qk.data) { if ($h.ip) { [void]$cand.Add([string]$h.ip) } }
+                foreach ($h in $qk.data) { if ($h.ip) { _AddCand $h.ip 'cert-pivot:Quake' } }
                 Write-Log ('Quake cert hits: {0}' -f @($qk.data).Count) 'OK'
             } else { Write-Log ('Quake: ' + $qk.message) 'WARN' }
         } catch { Write-Log "Quake error: $($_.Exception.Message)" 'WARN' }
@@ -1488,20 +1491,30 @@ function Phase4-Origin {
         if ($nd) { Save-Json (Join-Path $pkg '04_origin\netlas_domain.json') $nd }
     }
 
-    $candUniq = @($cand | Sort-Object -Unique | Where-Object { $_ -and $_ -ne $IP })
+    $candUniq = @($candSrc.Keys | Sort-Object -Unique | Where-Object { $_ -and $_ -ne $IP })
     Save-Lines (Join-Path $pkg '04_origin\candidates.txt') $candUniq
     if ($candUniq.Count) {
-        # enrich EACH origin candidate with keyless InternetDB (CVEs/tech) so the tester can triage which one to probe first (ports left to the in-VDI nmap scan)
+        # score EACH candidate's confidence from its evidence: cert-pivot providers (the IP presents the target's cert)
+        # are the strongest signal; passive-DNS agreement adds weight; a CDN/shared edge is NOT a distinct origin (-> LOW).
+        # Conservative by design - every candidate stays a PASSIVE lead until live-verified in the VDI.
         $enriched = New-Object System.Collections.Generic.List[string]
+        $cdnRx = '(?i)cloudfront|cloudflare|akamai|fastly|incapsula|imperva|sucuri|azureedge|edgecast|stackpath|cdn77|keycdn|bunnycdn|\bcdn\b'
+        $hi = 0
         foreach ($c in ($candUniq | Select-Object -First 25)) {
             $cdb = Invoke-Json "https://internetdb.shodan.io/$c"
-            if ($cdb) {
-                Save-Json (Join-Path $pkg ('04_origin\candidate_{0}.json' -f ($c -replace '[^0-9A-Fa-f.]', '_'))) $cdb
-                $enriched.Add(('{0}  cves[{1}]  {2}' -f $c, @($cdb.vulns).Count, ((@($cdb.cpes) | Select-Object -First 3) -join ' ')))
-            } else { $enriched.Add(('{0}  (no InternetDB data)' -f $c)) }
+            $cpes = @(); $vN = 0; $portsN = 0
+            if ($cdb) { Save-Json (Join-Path $pkg ('04_origin\candidate_{0}.json' -f ($c -replace '[^0-9A-Fa-f.]', '_'))) $cdb; $cpes = @($cdb.cpes); $vN = @($cdb.vulns).Count; $portsN = @($cdb.ports).Count }
+            $srcs = @($candSrc[$c])
+            $certPivot = [bool]@($srcs | Where-Object { $_ -like 'cert-pivot:*' }).Count
+            $passiveN = @($srcs | Where-Object { $_ -like 'passive-DNS:*' }).Count
+            $isCdn = ([bool](@($cpes) -match $cdnRx)) -or (@($script:AllIPs) -contains $c)
+            $conf = if ($isCdn) { 'LOW - CDN/shared edge' } elseif ($certPivot -and ($srcs.Count -ge 2 -or $portsN -gt 0)) { 'HIGH' } elseif ($certPivot -or $passiveN -ge 2) { 'MEDIUM' } else { 'LOW' }
+            if ($conf -eq 'HIGH') { $hi++ }
+            $ev = @($srcs); if ($srcs.Count -ge 2) { $ev += ('{0} independent sources' -f $srcs.Count) }; if ($portsN) { $ev += 'services on InternetDB' }; if ($isCdn) { $ev += 'CDN/shared - not a distinct origin' }
+            $enriched.Add(('{0}  [{1}]  cves[{2}]  {3}  <= {4}' -f $c, $conf, $vN, ((@($cpes) | Select-Object -First 3) -join ' '), ($ev -join ', ')))
         }
         Save-Lines (Join-Path $pkg '04_origin\candidates_enriched.txt') $enriched
-        Write-Log ('origin candidates: {0} (enriched via InternetDB -> 04_origin\candidates_enriched.txt)' -f $candUniq.Count) 'OK'
+        Write-Log ('origin candidates: {0} ({1} HIGH-confidence) -> 04_origin\candidates_enriched.txt (PASSIVE - live-verify)' -f $candUniq.Count, $hi) 'OK'
     } else { Write-Log 'no distinct origin candidates' 'INFO' }
     $script:OriginCandidates = $candUniq
 }
