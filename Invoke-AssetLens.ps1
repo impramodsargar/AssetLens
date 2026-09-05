@@ -295,7 +295,12 @@ function Build-Report {
     W "_Ports & services: run the separate nmap scan (in-VDI). This report covers the passive tech/CVE/DNS surface only._"
     if (@($dns).Count) {
         $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
-        W ""; W ("**DNS / mail hygiene:** " + $(if ($spfMiss) { 'SPF **MISSING**; ' } else { 'SPF ok; ' }) + $(if ($dmarcMiss) { 'DMARC **MISSING**' } else { 'DMARC ok' }) + " (full records in 01_scope\dns_records.txt)")
+        $dsec = GLines '01_scope\dns_security.txt'
+        $axfr = @($dsec | Where-Object { $_ -match 'AXFR: ZONE TRANSFER ALLOWED' })
+        $noCaa = [bool]@($dsec | Where-Object { $_ -match '^CAA: none' }).Count
+        $unsigned = [bool]@($dsec | Where-Object { $_ -match 'DNSSEC: NOT signed' }).Count
+        W ""; W ("**DNS / mail hygiene:** " + $(if ($spfMiss) { 'SPF **MISSING**; ' } else { 'SPF ok; ' }) + $(if ($dmarcMiss) { 'DMARC **MISSING**; ' } else { 'DMARC ok; ' }) + $(if (@($dsec).Count) { $(if ($unsigned) { 'DNSSEC **unsigned**; ' } else { 'DNSSEC signed; ' }) + $(if ($noCaa) { 'CAA **none**' } else { 'CAA set' }) } else { '' }) + " (01_scope\dns_records.txt + dns_security.txt)")
+        if ($axfr.Count) { W ""; W ('> **AXFR ZONE TRANSFER ALLOWED** - ' + (($axfr -replace 'AXFR: ZONE TRANSFER ALLOWED -> ', '') -join '; ') + '. The full DNS zone is dumpable from the nameserver(s) - treat as a finding.') }
     }
     if (@($tech).Count) {
         $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
@@ -1234,6 +1239,36 @@ function Get-TargetIP {
 }
 
 # ---------------------------------------------------------------- phases
+function Test-Axfr {
+    # Attempt a DNS zone transfer (AXFR) against one authoritative NS over TCP:53 (Resolve-DnsName can't do AXFR).
+    # Detection only: send an AXFR query and read the FIRST response message (<=64KB) - RCODE 0 with ANCOUNT>0 means the
+    # server handed back the zone (misconfig). Does NOT read the whole zone. Returns @{ok; answers; rcode; err}.
+    param([string]$NsHost, [string]$Zone)
+    try {
+        $nsIp = (Resolve-DnsName -Name $NsHost -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress
+        if (-not $nsIp) { return @{ ok = $false; answers = 0; err = 'no-A' } }
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $iar = $tcp.BeginConnect($nsIp, 53, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(6000)) { $tcp.Close(); return @{ ok = $false; answers = 0; err = 'conn-timeout' } }
+        $tcp.EndConnect($iar); $s = $tcp.GetStream(); $s.ReadTimeout = 7000
+        $id = Get-Random -Minimum 1 -Maximum 65534
+        $pkt = New-Object System.Collections.Generic.List[byte]
+        $pkt.Add([byte]((([int]$id) -shr 8) -band 0xFF)); $pkt.Add([byte](([int]$id) -band 0xFF))
+        $pkt.AddRange([byte[]]@(0, 0, 0, 1, 0, 0, 0, 0, 0, 0))                                  # flags, QD=1, AN/NS/AR=0
+        foreach ($lab in ($Zone -split '\.')) { $lb = [Text.Encoding]::ASCII.GetBytes($lab); $pkt.Add([byte]$lb.Length); $pkt.AddRange($lb) }
+        $pkt.Add([byte]0); $pkt.AddRange([byte[]]@(0, 252, 0, 1))                               # root; QTYPE=AXFR(252) QCLASS=IN(1)
+        $q = $pkt.ToArray(); $qlen = [int]$q.Length
+        $s.Write([byte[]]@([byte](($qlen -shr 8) -band 0xFF), [byte]($qlen -band 0xFF)), 0, 2)
+        $s.Write($q, 0, $qlen); $s.Flush()
+        $hb = New-Object byte[] 2; if ($s.Read($hb, 0, 2) -lt 2) { $tcp.Close(); return @{ ok = $false; answers = 0; err = 'no-resp' } }
+        $len = (([int]$hb[0]) -shl 8) -bor ([int]$hb[1]); $buf = New-Object byte[] $len; $off = 0
+        while ($off -lt $len) { $n = $s.Read($buf, $off, $len - $off); if ($n -le 0) { break }; $off += $n }
+        $tcp.Close()
+        if ($off -lt 12) { return @{ ok = $false; answers = 0; err = 'short' } }
+        $rcode = ([int]$buf[3]) -band 0x0F; $an = (([int]$buf[6]) -shl 8) -bor ([int]$buf[7])
+        return @{ ok = ($rcode -eq 0 -and $an -gt 0); answers = $an; rcode = $rcode }
+    } catch { return @{ ok = $false; answers = 0; err = $_.Exception.Message } }
+}
 function Phase1-Scope {
     param($IP)
     Write-Log 'P1  scope / ownership'
@@ -1249,6 +1284,26 @@ function Phase1-Scope {
         if ($dns.Count) { Save-Lines (Join-Path $pkg '01_scope\dns_records.txt') $dns; Write-Log ('DNS records: {0} -> 01_scope\dns_records.txt' -f $dns.Count) 'OK' }
         if (-not ($dns | Where-Object { $_ -match 'v=spf1' })) { Write-Log "$apex has no SPF TXT (spoofable?)" 'WARN' }
         if (-not ($dns | Where-Object { $_ -match 'DMARC1' }))  { Write-Log "$apex has no DMARC record" 'WARN' }
+        # DNS security: CAA (via Google DoH - Resolve-DnsName has no CAA type), DNSSEC (DNSKEY), DKIM (common selectors),
+        # AXFR zone-transfer attempt against each authoritative NS. CAA/DNSSEC/DKIM go via DoH/resolver; AXFR queries the
+        # target's own NS directly (one TCP each) - all under the -not $Strict guard, so -Strict (no target contact) skips it.
+        $dsec = New-Object System.Collections.Generic.List[string]
+        $caaJson = Invoke-Json ("https://dns.google/resolve?name={0}&type=257" -f $apex)
+        $caa = @(); if ($caaJson -and $caaJson.Answer) { $caa = @($caaJson.Answer | Where-Object { $_.type -eq 257 } | ForEach-Object { [string]$_.data }) }
+        if ($caa.Count) { $dsec.Add('CAA:'); $caa | ForEach-Object { $dsec.Add("  $_") } } else { $dsec.Add("CAA: none - any CA may issue certs for $apex"); Write-Log "$apex has no CAA record (any CA can issue)" 'WARN' }
+        $dk = @(); try { $dk = @(Resolve-DnsName -Name $apex -Type DNSKEY -ErrorAction Stop | Where-Object { $_.Type -eq 'DNSKEY' }) } catch {}
+        if ($dk.Count) { $dsec.Add("DNSSEC: signed ($($dk.Count) DNSKEY)") } else { $dsec.Add('DNSSEC: NOT signed'); Write-Log "$apex is not DNSSEC-signed" 'WARN' }
+        $dkimFound = @()
+        foreach ($sel in @('default', 'google', 'selector1', 'selector2', 'k1', 'k2', 'dkim', 'mail', 's1', 's2', 'smtp', 'mandrill', 'mxvault', 'protonmail', 'zmail')) {
+            try { $tt = (Resolve-DnsName -Type TXT "$sel._domainkey.$apex" -ErrorAction Stop | ForEach-Object { $_.Strings -join '' }); if ($tt -match 'DKIM1|k=rsa|(?:^|;)\s*p=[A-Za-z0-9+/]') { $dkimFound += $sel } } catch {}
+        }
+        $dsec.Add($(if ($dkimFound.Count) { "DKIM: selector(s) found - $($dkimFound -join ', ')" } else { 'DKIM: no common selector found (may use a custom selector)' }))
+        $nsHosts = @(); try { $nsHosts = @(Resolve-DnsName -Name $apex -Type NS -ErrorAction Stop | ForEach-Object { $_.NameHost } | Where-Object { $_ } | Select-Object -Unique) } catch {}
+        $axfrOpen = @(); foreach ($ns in $nsHosts) { $ax = Test-Axfr -NsHost $ns -Zone $apex; if ($ax.ok) { $axfrOpen += ('{0} ({1} records)' -f $ns, $ax.answers) } }
+        if ($axfrOpen.Count) { $dsec.Add('AXFR: ZONE TRANSFER ALLOWED -> ' + ($axfrOpen -join '; ')); Write-Log ("AXFR ZONE TRANSFER ALLOWED on {0}: {1}" -f $apex, ($axfrOpen -join '; ')) 'WARN' }
+        else { $dsec.Add("AXFR: refused by all $($nsHosts.Count) nameserver(s)") }
+        Save-Lines (Join-Path $pkg '01_scope\dns_security.txt') $dsec
+        Write-Log ('DNS security: CAA {0} | DNSSEC {1} | DKIM {2} | AXFR {3} -> 01_scope\dns_security.txt' -f $(if ($caa.Count) { $caa.Count } else { 'none' }), $(if ($dk.Count) { 'signed' } else { 'unsigned' }), $(if ($dkimFound.Count) { $dkimFound.Count } else { 0 }), $(if ($axfrOpen.Count) { 'OPEN!' } else { 'closed' })) $(if ($axfrOpen.Count) { 'WARN' } else { 'OK' })
     }
     Save-Lines (Join-Path $pkg '01_scope\ip.txt') @($(if (@($script:AllIPs).Count) { $script:AllIPs } else { $IP }) | Where-Object { $_ })
     if ($IP) {

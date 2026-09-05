@@ -41,7 +41,7 @@ flowchart TB
 
     subgraph PASSIVE["PASSIVE PIPELINE  ·  zero packets to target"]
         direction TB
-        P1["P1 · Scope — RDAP · DNS · IP · geo · CDN/WAF · M365 tenant"]
+        P1["P1 · Scope — RDAP · DNS · IP · geo · CDN/WAF · M365 tenant · DNS-sec (CAA/DNSSEC/DKIM/AXFR)"]
         P2["P2 · Certs — crt.sh SANs · subfinder (-Enum)"]
         P3["P3 · Intel — InternetDB CVEs/CPEs · AbuseIPDB reputation"]
         P4["P4 · Origin — passive-DNS · CriminalIP/Quake cert→IP pivot (WAF bypass)"]
@@ -130,7 +130,7 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 
 | Phase | What it pulls (all third-party / passive) | Keys |
 |---|---|---|
-| **P1 Scope** | RDAP · DNS (MX/SPF/DMARC/NS/CNAME) · IP · geo · CDN/WAF · netblock owner · **M365 / Azure AD tenant** | keyless |
+| **P1 Scope** | RDAP · DNS (MX/SPF/DMARC/NS/CNAME) · IP · geo · CDN/WAF · netblock owner · **M365 / Azure AD tenant** · **DNS security** (CAA · DNSSEC · DKIM selectors · **AXFR** zone-transfer attempt per NS) | keyless |
 | **P2 Certs** | crt.sh SANs (in-scope flagged) · `subfinder` (`-Enum`) | keyless |
 | **P3 Intel** | Shodan-InternetDB **CVEs/CPEs** · AbuseIPDB reputation *(ports left to the in-VDI nmap scan)* | keyless |
 | **P4 Origin** | passive-DNS (VirusTotal · SecurityTrails) · **CriminalIP / Quake cert→IP pivot** (WAF bypass) · Netlas | keyed |
