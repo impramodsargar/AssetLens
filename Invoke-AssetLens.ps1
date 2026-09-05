@@ -1222,7 +1222,16 @@ function Invoke-JsluiceDeep {
     }
     $gqlU = @($gql | Sort-Object -Unique); $res.gql = $gqlU.Count
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-    if ($sinks.Count) { Save-Lines (Join-Path $OutDir ($Prefix + 'dom_sinks.txt'))   (@($sinks) | Sort-Object -Unique) }
+    if ($sinks.Count) {
+        # legend so a reader knows what [HIGH]/[sink] mean without reading the source
+        $sl = New-Object System.Collections.Generic.List[string]
+        $sl.Add('# [HIGH] = DOM sink fed by a user-controllable source (location.hash/search/href, document.URL/referrer/cookie, window.name, event/msg .data, URLSearchParams, localStorage) - prioritise these')
+        $sl.Add('# [sink] = DOM sink with no obvious user-controlled source in the same statement - lower priority, still worth a look')
+        $sl.Add('# format: [level]  <sink-type>  <code snippet>   <=  <source-file>')
+        $sl.Add('')
+        foreach ($s in (@($sinks) | Sort-Object -Unique)) { $sl.Add([string]$s) }
+        Save-Lines (Join-Path $OutDir ($Prefix + 'dom_sinks.txt')) $sl
+    }
     if ($pm.Count)    { Save-Lines (Join-Path $OutDir ($Prefix + 'postmessage.txt')) (@($pm)    | Sort-Object -Unique) }
     if ($gqlU.Count)  { Save-Lines (Join-Path $OutDir ($Prefix + 'graphql_ops.txt')) $gqlU }
     return $res
@@ -1766,7 +1775,7 @@ function Phase6-Js {
             foreach ($b in $jsBodies) { $id = [IO.Path]::GetFileNameWithoutExtension($b.Name); if ($idMap.ContainsKey($id)) { $jUrlMap[$b.FullName] = $idMap[$id] } }
         }
         $deep = Invoke-JsluiceDeep $jsl @($jsBodies.FullName) $jsDir '' $jUrlMap
-        Write-Log ('jsluice deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
+        Write-Log ('jsluice deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
         # jsluice secrets on the archived bodies (AST-based; complements trufflehog/gitleaks) - was live-only before
         $secPat = Join-Path $ScriptRoot 'config\jsluice_secrets.json'
         $jsec = Invoke-Tool $jsl ((@('secrets') + $(if (Test-Path $secPat) { @('--patterns', $secPat) } else { @() })) + @($jsBodies.FullName)) -TimeoutSec 600
@@ -1791,7 +1800,7 @@ function Phase6-Js {
             if ($jsl -and $reFiles.Count) {
                 $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
                 $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $jsDir 'srcmap_' $reMap
-                Write-Log ('srcmap deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 06_js\srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+                Write-Log ('srcmap deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 06_js\srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
             }
         }
     }
@@ -2150,7 +2159,7 @@ function Phase8-LiveJs {
         $jUrlMap = @{}
         foreach ($idxF in @(Get-ChildItem $ljDir -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) { foreach ($line in (Get-Content $idxF.FullName -ErrorAction SilentlyContinue)) { $mm = [regex]::Match($line, '^(\S+)\s+(https?://\S+)'); if ($mm.Success) { $jUrlMap[$mm.Groups[1].Value] = $mm.Groups[2].Value } } }
         $deep = Invoke-JsluiceDeep $jsl @($bodies.FullName) $liveDir 'live_' $jUrlMap
-        Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
+        Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
     } else {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
@@ -2179,7 +2188,7 @@ function Phase8-LiveJs {
                 if ($jsl -and $reFiles.Count) {
                     $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
                     $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $liveDir 'live_srcmap_' $reMap
-                    Write-Log ('live srcmap deep: {0} DOM sink(s) ({1} tainted) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 08_live\live_srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+                    Write-Log ('live srcmap deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 08_live\live_srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
                 }
             }
         }
