@@ -5,7 +5,7 @@
 # config\keys.ps1 is git-ignored and must NEVER be committed.
 #
 # ALL keys below are FREE-tier. The toolkit also has a keyless HTTP core
-# (RDAP, crt.sh, Shodan-InternetDB, Wayback, Tranco, urlscan search,
+# (RDAP, crt.sh, Shodan-InternetDB, Wayback, urlscan search,
 # LeakCheck breach data) that runs with ZERO keys.
 # Keys only widen coverage. Anything left blank is skipped.
 # ---------------------------------------------------------------------------

@@ -211,7 +211,6 @@ function Build-Report {
     $dedupUrls = GLines '05_history\urls_deduped.txt'; if (-not @($dedupUrls).Count) { $dedupUrls = $allUrls }
     $params  = GLines '05_history\params.txt'
     $jsUrls  = GLines '05_history\js_urls.txt'
-    $tranco  = GJson '07_osint\tranco.json'
     $ghHits  = GLines '07_osint\github_hits.txt'
     $emails  = GLines '07_osint\emails.txt'
     $breach  = GLines '07_osint\breach_hits.txt'
@@ -259,9 +258,9 @@ function Build-Report {
     W ""
     W ("Generated from package ``{0}``" -f (Split-Path $Package -Leaf))
     W ""
-    W ("| IP | Netblock / ASN | CDN / WAF | Tranco |")
-    W ("|---|---|---|---|")
-    W ("| {0} | {1} | {2} | {3} |" -f $(if ($ip) { $ip } else { 'n/a' }), $(if ($owner) { $owner } else { 'n/a' }), $(if ($cdnName) { 'YES - ' + $cdnName } else { 'none detected' }), $(if ($tranco.ranks) { $tranco.ranks[0].rank } else { 'n/a' }))
+    W ("| IP | Netblock / ASN | CDN / WAF |")
+    W ("|---|---|---|")
+    W ("| {0} | {1} | {2} |" -f $(if ($ip) { $ip } else { 'n/a' }), $(if ($owner) { $owner } else { 'n/a' }), $(if ($cdnName) { 'YES - ' + $cdnName } else { 'none detected' }))
     W ""
     if ($geo) { W ("**Host location:** {0}{1} ({2}) &middot; {3} &middot; AS{4}" -f $(if ($geo.city) { $geo.city + ', ' } else { '' }), $geo.country, $geo.country_code, $geo.connection.org, $geo.connection.asn); W "" }
     if ($m365 -and $m365.isAzureAD) {
@@ -452,7 +451,6 @@ function Build-Report {
     W "## 6. OSINT / exposure"
     W ("- Org emails: **{0}**" -f @($emails).Count) ; if (@($emails).Count) { W ("  - " + ((@($emails) | Select-Object -First 15) -join ', ')) }
     if (@($breach).Count) { W ("- Breach/infostealer hits: **{0}** (07_osint\breach_hits.txt)" -f @($breach).Count) }
-    if ($tranco.ranks) { W ("- Tranco rank: **{0}**" -f $tranco.ranks[0].rank) }
     if ($otx) { W ("- OTX threat pulses: **{0}**{1}" -f [int]$otx.pulse_info.count, $(if ([int]$otx.pulse_info.count -gt 0) { ' - host referenced in threat reports (07_osint\otx_host.json)' } else { '' })) }
     if ($abuse) { W ("- AbuseIPDB (host IP): **score {0}/100**, {1} report(s), usage ``{2}``{3}" -f $abuse.abuseConfidenceScore, $abuse.totalReports, $abuse.usageType, $(if ($abuse.isTor) { ', TOR exit' } else { '' })) }
     W ""
@@ -735,11 +733,6 @@ function Build-Report {
     HW '<div class="card" id="sec6"><h2><span class="sn">6 &middot;</span> OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
     HW ('<div class="muted">org emails: <span style="color:var(--text);font-weight:500">{0}</span>{1}</div>' -f @($emails).Count, $(if (Test-Path (P '07_osint\emails.txt')) { ' &middot; ' + (FLink '07_osint\emails.txt' 'list') } else { '' }))
     if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--dn);font-weight:500">{0}</span>{1}</div>' -f @($breach).Count, $(if (Test-Path (P '07_osint\breach_hits.txt')) { ' &middot; ' + (FLink '07_osint\breach_hits.txt' 'list') } else { '' })) }
-    if ($tranco.ranks) {
-        $trRank = 0; try { $trRank = [int64]$tranco.ranks[0].rank } catch {}
-        $trLabel = if ($trRank -le 0) { 'unranked' } elseif ($trRank -le 100000) { 'a high-traffic site' } elseif ($trRank -le 1000000) { 'a mid-traffic site' } else { 'a low-traffic / niche site' }
-        HW ('<div class="muted">Tranco rank: <a href="https://tranco-list.eu/query?domain={0}" target="_blank" rel="noopener" style="font-weight:500">{1}</a> <span style="color:var(--faint)">&middot; the domain''s position on the research-grade Tranco popularity list (Alexa-style; #1 = most-visited). Here that means {2}.</span></div>' -f (HE $host_), (HE ([string]$tranco.ranks[0].rank)), $trLabel)
-    }
     if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <a href="https://github.com/search?q={1}&amp;type=code" target="_blank" rel="noopener" style="font-weight:500">{0}</a> <span style="color:var(--faint)">&middot; public source files mentioning the host - review for leaked config / paths</span>{2}</div>' -f @($ghHits).Count, (HE $host_), $(if (Test-Path (P '07_osint\github_hits.txt')) { ' &middot; ' + (FLink '07_osint\github_hits.txt' 'list') } else { '' })) }
     if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <a href="https://otx.alienvault.com/indicator/hostname/{2}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}</a> <span style="color:var(--faint)">&middot; AlienVault threat-intel reports referencing the host</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--info)' }), $opc, (HE $host_)) }
     if ($abuse) { HW ('<div class="muted">AbuseIPDB: <a href="https://www.abuseipdb.com/check/{4}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}/100</a> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--info)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType)), (HE $ip)) }
@@ -875,7 +868,7 @@ function Invoke-Validate {
         if ($ok) { Vline $t 'OK' 'Green' } else { Vline $t $(if ($t -eq 'python') { 'missing / Store stub' } else { 'missing' }) 'DarkGray' }
     }
     Write-Host "`nKeyless sources:" -ForegroundColor Cyan
-    foreach ($pr in @(@('Shodan-InternetDB', 'https://internetdb.shodan.io/8.8.8.8'), @('crt.sh', 'https://crt.sh/?q=example.com&output=json'), @('RDAP', 'https://rdap.org/domain/example.com'), @('Tranco', 'https://tranco-list.eu/api/ranks/domain/google.com'), @('LeakCheck', 'https://leakcheck.io/api/public?check=test@example.com'), @('M365 / Azure AD', 'https://login.microsoftonline.com/common/userrealm/user@example.com?api-version=1.0'))) {
+    foreach ($pr in @(@('Shodan-InternetDB', 'https://internetdb.shodan.io/8.8.8.8'), @('crt.sh', 'https://crt.sh/?q=example.com&output=json'), @('RDAP', 'https://rdap.org/domain/example.com'), @('LeakCheck', 'https://leakcheck.io/api/public?check=test@example.com'), @('M365 / Azure AD', 'https://login.microsoftonline.com/common/userrealm/user@example.com?api-version=1.0'))) {
         $r = Hit $pr[1]; if ($r.ok) { Vline $pr[0] 'OK' 'Green' } elseif (($r.code -is [int]) -and ($r.code -lt 500)) { Vline $pr[0] ("reachable ({0})" -f $r.code) 'Green' } else { Vline $pr[0] ("down ({0})" -f $r.code) 'Yellow' }
     }
     Write-Host "`nAPI keys:" -ForegroundColor Cyan
@@ -1871,10 +1864,6 @@ function Phase7-Osint {
     Write-Log 'P7  OSINT / leaks / reputation'
     $emails = New-Object System.Collections.Generic.HashSet[string]
 
-    # Tranco rank (keyless)
-    $tr = Invoke-Json "https://tranco-list.eu/api/ranks/domain/$Target"
-    if ($tr) { Save-Json (Join-Path $pkg '07_osint\tranco.json') $tr; if ($tr.ranks) { Write-Log ('Tranco rank: {0}' -f $tr.ranks[0].rank) 'OK' } }
-
     # GitHub code search - target hostname referenced in public code
     if (Have-Key 'GitHub') {
         $gh = @{ Authorization = "Bearer $($Keys.GitHub)"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'AssetLens'; 'X-GitHub-Api-Version' = '2022-11-28' }
@@ -1990,7 +1979,7 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 - 04_origin   origin-behind-CDN candidates (verify when testing)
 - 05_history  archived URLs, uro-deduped, URIs (UAT replay), params, extensions
 - 06_js       archived responses + native-regex endpoints/params/wordlist + trufflehog/gitleaks/retire.js
-- 07_osint    Tranco, GitHub (code + commit-emails), OTX threat-intel, LeakIX, emails, breach exposure
+- 07_osint    GitHub (code + commit-emails), OTX threat-intel, LeakIX, emails, breach exposure
 - 08_tech     CPEs + InternetDB CVEs
 - Verify.md   ranked active-test worklist
 - OOS_observed.txt   off-host assets (DO NOT TEST)
