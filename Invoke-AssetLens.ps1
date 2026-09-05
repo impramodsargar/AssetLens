@@ -253,6 +253,45 @@ function Build-Report {
     # how many IPs P3 scanned (new packages record it in internetdb.json; fall back to ip.txt for older ones)
     $ipN = $(if ($idb -and $idb.ips) { @($idb.ips).Count } else { $t = @(GLines '01_scope\ip.txt'); if ($t.Count) { $t.Count } else { 1 } })
 
+    # ---- endpoint provenance: which discovery channels found each in-scope path. More channels corroborating a
+    #      path = higher confidence it is real; LIVE = confirmed reachable now. This is the per-endpoint view the
+    #      tester wants (e.g. "/api/foo <- LIVE + OPENAPI + ARCHIVED_JS") instead of hunting across several files.
+    $prov = @{}
+    function _ProvPath { param($u)
+        $t = [string]$u
+        if ($t -match '^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.+)$') { $t = $matches[1] }   # drop METHOD prefix
+        $t = (($t -split '\s*\[', 2)[0]).Trim()                                                        # drop " [params]" suffix
+        if (-not $t -or $t -match '^//') { return $null }                                              # protocol-relative -> unattributable
+        if ($t -match '^https?://([^/:]+)([^?#]*)') { if (($matches[1]).ToLower() -ne $host_.ToLower()) { return $null }; $p = $matches[2] }
+        elseif ($t -match '^/') { $p = ($t -split '[?#]', 2)[0] }
+        else { return $null }
+        if (-not $p) { $p = '/' }
+        $p = $p.TrimEnd('/'); if (-not $p) { $p = '/' }
+        return $p.ToLower()
+    }
+    function _AddProv { param($lines, $src) foreach ($l in @($lines)) { $pp = _ProvPath $l; if ($pp) { if (-not $prov.ContainsKey($pp)) { $prov[$pp] = New-Object System.Collections.Generic.HashSet[string] }; [void]$prov[$pp].Add($src) } } }
+    _AddProv $liveUrls 'LIVE'
+    _AddProv (GLines '08_live\live_js_endpoints.txt') 'LIVE_JS'
+    _AddProv $liveApi 'LIVE_JS'
+    _AddProv $apiEp 'OPENAPI'
+    _AddProv $xEnd 'ARCHIVED_JS'
+    _AddProv $jsApi 'ARCHIVED_JS'
+    _AddProv $dedupUrls 'HISTORY'
+    $provOrder = @('LIVE', 'OPENAPI', 'LIVE_JS', 'ARCHIVED_JS', 'HISTORY')   # display order: strongest signal first
+    $provRows = @(foreach ($k in $prov.Keys) { $ss = @($provOrder | Where-Object { $prov[$k].Contains($_) }); [pscustomobject]@{ path = $k; n = $ss.Count; live = [int]($prov[$k].Contains('LIVE')); srcs = $ss } })
+    $provRows = @($provRows | Sort-Object @{ e = { $_.n }; Descending = $true }, @{ e = { $_.live }; Descending = $true }, @{ e = { $_.path } })
+    $provTop = @($provRows | Where-Object { $_.n -ge 2 })   # 2+ channels = corroborated (the high-confidence-real ones)
+    if ($provRows.Count) {
+        $provFile = New-Object System.Collections.Generic.List[string]
+        $provFile.Add('# endpoint provenance - which discovery channels found each in-scope path')
+        $provFile.Add('# more channels corroborating a path = higher confidence it is real; LIVE = confirmed reachable now (-Probe)')
+        $provFile.Add('# channels: LIVE (probed 2xx/3xx/401/403) | OPENAPI (spec) | LIVE_JS (current JS) | ARCHIVED_JS (archived JS) | HISTORY (web archives)')
+        $provFile.Add('# format: [N] /path  <-  SRC, SRC, ...')
+        $provFile.Add('')
+        foreach ($r in $provRows) { $provFile.Add(('[{0}] {1}  <-  {2}' -f $r.n, $r.path, ($r.srcs -join ', '))) }
+        [System.IO.File]::WriteAllLines((P 'endpoint_provenance.txt'), [string[]]$provFile, (New-Object System.Text.UTF8Encoding($false)))
+    }
+
     $sig = '(?i)(/admin|/api|/auth|/login|/logout|/signup|/register|password|reset|token|oauth|/sso|upload|/download|/config|/setting|debug|/internal|/private|graphql|/gql|swagger|openapi|\.json|\.xml|\.env|backup|/export|/import|/payment|/invoice|/account|webhook|/callback|redirect)'
     # high-signal endpoints, restricted to the IN-SCOPE host (off-host siblings stay in OOS, never the attack surface / queue).
     # Uses $host_ (derived from the package) not Test-InScope, since $Target/$InScope aren't set in -Report mode.
@@ -399,6 +438,12 @@ function Build-Report {
     }
     else { W "_No high-signal endpoints matched. Full list in 05_history\all_urls.txt._" }
     W ""
+    if ($provTop.Count) {
+        W ("**Corroborated endpoints ({0})** - found by 2+ independent channels; more channels = more likely real, ``LIVE`` = confirmed now via -Probe (full table: endpoint_provenance.txt):" -f $provTop.Count); W ""
+        foreach ($r in ($provTop | Select-Object -First 25)) { W ('- ``{0}``  <-  {1}' -f $r.path, ($r.srcs -join ' + ')) }
+        if ($provTop.Count -gt 25) { W ("- _...+{0} more in endpoint_provenance.txt_" -f ($provTop.Count - 25)) }
+        W ""
+    }
     $gfLines = @()
     foreach ($k in @('xss', 'sqli', 'ssrf', 'lfi', 'redirect', 'rce', 'ssti', 'idor')) { $n = @(GLines "06_js\gf\$k.txt").Count; if ($n) { $gfLines += ('- **{0}** - {1} URL(s) -> `06_js\gf\{0}.txt`' -f $k, $n) } }
     if ($gfLines.Count) {
@@ -680,6 +725,16 @@ function Build-Report {
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> URIs</span>' -f @($uris).Count)
     HW '</div>'
     if ($hot.Count) { HW '<div class="src" style="margin-top:8px;line-height:1.9">'; foreach ($u in ($hot | Select-Object -First 8)) { HW ((UL $u) + '<br>') }; HW '</div>'; if ($hot.Count -gt 8) { HW ('<div class="flink muted" style="margin-top:2px">+{0} more high-signal</div>' -f ($hot.Count - 8)) } }
+    if ($provTop.Count) {
+        HW ('<div style="font-size:13px;margin-top:12px"><span style="font-weight:600">{0}</span> <span class="muted">endpoint(s) corroborated by 2+ channels - more channels = more likely real</span></div>' -f $provTop.Count)
+        HW '<div class="src" style="line-height:2">'
+        foreach ($r in ($provTop | Select-Object -First 10)) {
+            $badges = (($r.srcs | ForEach-Object { $bc = if ($_ -eq 'LIVE') { 'var(--ok)' } elseif ($_ -eq 'OPENAPI') { 'var(--dn)' } else { 'var(--muted)' }; ('<span style="color:{0};font-size:10px;font-weight:700">{1}</span>' -f $bc, $_) }) -join '<span class="muted"> + </span>')
+            HW ('{0} <span class="muted">&larr;</span> {1}<br>' -f (UL $r.path), $badges)
+        }
+        HW '</div>'
+        HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink 'endpoint_provenance.txt' ('full provenance table (' + $provRows.Count + ' paths)')))
+    }
     HW ('<div class="flink muted" style="margin-top:8px">open: {0} &middot; {1} &middot; {2} &middot; {3} &middot; {4}</div>' -f (FLink '05_history\all_urls.txt' 'all_urls'), (FLink '05_history\urls_deduped.txt' 'deduped'), (FLink '05_history\uris.txt' 'uris'), (FLink '05_history\params.txt' 'params'), (FLink '06_js\endpoints.txt' 'endpoints'))
     HW '</div>'
     if (@($apiEp).Count -or @($apiRefs).Count -or @($jsApi).Count) {
@@ -1225,7 +1280,7 @@ function Invoke-JsluiceDeep {
     if ($sinks.Count) {
         # legend so a reader knows what [HIGH]/[sink] mean without reading the source
         $sl = New-Object System.Collections.Generic.List[string]
-        $sl.Add('# [HIGH] = DOM sink fed by a user-controllable source (location.hash/search/href, document.URL/referrer/cookie, window.name, event/msg .data, URLSearchParams, localStorage) - prioritise these')
+        $sl.Add('# [HIGH] = a user-controllable source (location.hash/search/href, document.URL/referrer/cookie, window.name, event/msg .data, URLSearchParams, localStorage) appears in the SAME statement as the sink - a HEURISTIC, not proven data-flow; prioritise for manual review')
         $sl.Add('# [sink] = DOM sink with no obvious user-controlled source in the same statement - lower priority, still worth a look')
         $sl.Add('# format: [level]  <sink-type>  <code snippet>   <=  <source-file>')
         $sl.Add('')
@@ -1775,7 +1830,7 @@ function Phase6-Js {
             foreach ($b in $jsBodies) { $id = [IO.Path]::GetFileNameWithoutExtension($b.Name); if ($idMap.ContainsKey($id)) { $jUrlMap[$b.FullName] = $idMap[$id] } }
         }
         $deep = Invoke-JsluiceDeep $jsl @($jsBodies.FullName) $jsDir '' $jUrlMap
-        Write-Log ('jsluice deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
+        Write-Log ('jsluice deep: {0} DOM sink(s) ({1} likely user-controlled) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
         # jsluice secrets on the archived bodies (AST-based; complements trufflehog/gitleaks) - was live-only before
         $secPat = Join-Path $ScriptRoot 'config\jsluice_secrets.json'
         $jsec = Invoke-Tool $jsl ((@('secrets') + $(if (Test-Path $secPat) { @('--patterns', $secPat) } else { @() })) + @($jsBodies.FullName)) -TimeoutSec 600
@@ -1800,7 +1855,7 @@ function Phase6-Js {
             if ($jsl -and $reFiles.Count) {
                 $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
                 $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $jsDir 'srcmap_' $reMap
-                Write-Log ('srcmap deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 06_js\srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+                Write-Log ('srcmap deep: {0} DOM sink(s) ({1} likely user-controlled) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 06_js\srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
             }
         }
     }
@@ -2159,7 +2214,7 @@ function Phase8-LiveJs {
         $jUrlMap = @{}
         foreach ($idxF in @(Get-ChildItem $ljDir -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) { foreach ($line in (Get-Content $idxF.FullName -ErrorAction SilentlyContinue)) { $mm = [regex]::Match($line, '^(\S+)\s+(https?://\S+)'); if ($mm.Success) { $jUrlMap[$mm.Groups[1].Value] = $mm.Groups[2].Value } } }
         $deep = Invoke-JsluiceDeep $jsl @($bodies.FullName) $liveDir 'live_' $jUrlMap
-        Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
+        Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} likely user-controlled) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
     } else {
         Write-Log ("live JS: {0} file(s) -> {1} endpoints (regex; jsluice not on PATH)" -f $bodies.Count, $rx.Count) 'OK'
     }
@@ -2188,7 +2243,7 @@ function Phase8-LiveJs {
                 if ($jsl -and $reFiles.Count) {
                     $reMap = @{}; foreach ($rf in $reFiles) { $reMap[$rf.FullName] = ($rf.FullName.Substring($smDir.Length) -replace '^[\\/]+', '') }
                     $sd = Invoke-JsluiceDeep $jsl @($reFiles.FullName) $liveDir 'live_srcmap_' $reMap
-                    Write-Log ('live srcmap deep: {0} DOM sink(s) ({1} reachable from user input) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 08_live\live_srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
+                    Write-Log ('live srcmap deep: {0} DOM sink(s) ({1} likely user-controlled) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s) -> 08_live\live_srcmap_dom_sinks/postmessage/graphql_ops.txt' -f $sd.sinks, $sd.sinksHigh, $sd.pm, $sd.pmOpen, $sd.gql) 'OK'
                 }
             }
         }
