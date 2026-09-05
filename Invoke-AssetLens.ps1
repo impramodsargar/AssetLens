@@ -246,6 +246,8 @@ function Build-Report {
     # P3 keeps only the passive intel nmap does not give you: InternetDB CVEs/CPEs (below) + AbuseIPDB reputation.
     $vulns = @(); if ($idb.vulns) { $vulns = @($idb.vulns) }
     $cpes  = @(); if ($idb.cpes)  { $cpes  = @($idb.cpes) }
+    # how many IPs P3 scanned (new packages record it in internetdb.json; fall back to ip.txt for older ones)
+    $ipN = $(if ($idb -and $idb.ips) { @($idb.ips).Count } else { $t = @(GLines '01_scope\ip.txt'); if ($t.Count) { $t.Count } else { 1 } })
 
     $sig = '(?i)(/admin|/api|/auth|/login|/logout|/signup|/register|password|reset|token|oauth|/sso|upload|/download|/config|/setting|debug|/internal|/private|graphql|/gql|swagger|openapi|\.json|\.xml|\.env|backup|/export|/import|/payment|/invoice|/account|webhook|/callback|redirect)'
     # high-signal endpoints, restricted to the IN-SCOPE host (off-host siblings stay in OOS, never the attack surface / queue).
@@ -329,7 +331,7 @@ function Build-Report {
     }
     W ""
     W "## 2. Vulnerabilities (passive)"
-    if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) on the exposed IP:" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
+    if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) across the exposed IP(s):" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
     else { W "_None flagged by InternetDB. Still version-check the services from the nmap scan._" }
     if ($cpes.Count) { W ""; W ("**Tech / CPEs:** " + (($cpes | Select-Object -First 20) -join ', ')) }
     $rj = GJson '06_js\retirejs.json'
@@ -451,7 +453,7 @@ function Build-Report {
     W ("- Org emails: **{0}**" -f @($emails).Count) ; if (@($emails).Count) { W ("  - " + ((@($emails) | Select-Object -First 15) -join ', ')) }
     if (@($breach).Count) { W ("- Breach/infostealer hits: **{0}** (07_osint\breach_hits.txt)" -f @($breach).Count) }
     if ($otx) { W ("- OTX threat pulses: **{0}**{1}" -f [int]$otx.pulse_info.count, $(if ([int]$otx.pulse_info.count -gt 0) { ' - host referenced in threat reports (07_osint\otx_host.json)' } else { '' })) }
-    if ($abuse) { W ("- AbuseIPDB (host IP): **score {0}/100**, {1} report(s), usage ``{2}``{3}" -f $abuse.abuseConfidenceScore, $abuse.totalReports, $abuse.usageType, $(if ($abuse.isTor) { ', TOR exit' } else { '' })) }
+    if ($abuse) { W ("- AbuseIPDB ({0}): **score {1}/100**, {2} report(s), usage ``{3}``{4}" -f $(if ($abuse.ipAddress) { $abuse.ipAddress } else { $ip }), $abuse.abuseConfidenceScore, $abuse.totalReports, $abuse.usageType, $(if ($abuse.isTor) { ', TOR exit' } else { '' })) }
     W ""
     W "## 7. Out of scope (observed - DO NOT TEST)"
     $oosClean = @($oos)
@@ -623,10 +625,10 @@ function Build-Report {
     HW '</div>'
     HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> Known vulnerabilities</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:8px">Two independent sources: host / service CVEs (Shodan InternetDB, tied to the IP) and vulnerable JS libraries (retire.js, from shipped front-end code). Version-confirm on the live target before reporting.</div>'
-    HW '<div style="font-size:13px;font-weight:600">Host / service CVEs <span class="muted" style="font-weight:400">&middot; Shodan InternetDB</span></div>'
+    HW ('<div style="font-size:13px;font-weight:600">Host / service CVEs <span class="muted" style="font-weight:400">&middot; Shodan InternetDB{0}</span></div>' -f $(if ($ipN -gt 1) { " &middot; $ipN IPs scanned" } else { '' }))
     if (@($vulns).Count) {
         HW '<div class="cve" style="margin:3px 0 2px">'; HW ((@($vulns) | Sort-Object -Unique | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', '); HW '</div>'
-    } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none recorded for the host IP - run the in-VDI nmap / version scan to confirm services.</div>' }
+    } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none recorded for the host IP(s) - run the in-VDI nmap / version scan to confirm services.</div>' }
     HW '<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js</span></div>'
     if ($libs.Count) {
         HW ('<div class="bar"><div style="flex:{0};background:var(--dn)"></div><div style="flex:{1};background:var(--wn)"></div><div style="flex:{2};background:var(--faint)"></div></div>' -f $sevHi, $sevMd, $sevLo)
@@ -734,7 +736,7 @@ function Build-Report {
     if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--dn);font-weight:500">{0}</span>{1}</div>' -f @($breach).Count, $(if (Test-Path (P '07_osint\breach_hits.txt')) { ' &middot; ' + (FLink '07_osint\breach_hits.txt' 'list') } else { '' })) }
     if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <a href="https://github.com/search?q={1}&amp;type=code" target="_blank" rel="noopener" style="font-weight:500">{0}</a> <span style="color:var(--faint)">&middot; public source files mentioning the host - review for leaked config / paths</span>{2}</div>' -f @($ghHits).Count, (HE $host_), $(if (Test-Path (P '07_osint\github_hits.txt')) { ' &middot; ' + (FLink '07_osint\github_hits.txt' 'list') } else { '' })) }
     if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <a href="https://otx.alienvault.com/indicator/hostname/{2}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}</a> <span style="color:var(--faint)">&middot; AlienVault threat-intel reports referencing the host</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--info)' }), $opc, (HE $host_)) }
-    if ($abuse) { HW ('<div class="muted">AbuseIPDB: <a href="https://www.abuseipdb.com/check/{4}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}/100</a> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--info)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType)), (HE $ip)) }
+    if ($abuse) { $abIp = $(if ($abuse.ipAddress) { [string]$abuse.ipAddress } else { $ip }); HW ('<div class="muted">AbuseIPDB <span class="mono" style="font-size:12px">{4}</span>: <a href="https://www.abuseipdb.com/check/{4}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}/100</a> <span class="muted">({2} reports &middot; {3})</span>{5}</div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--info)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType)), (HE $abIp), $(if (Test-Path (P '03_scan\abuseipdb_all.txt')) { ' &middot; ' + (FLink '03_scan\abuseipdb_all.txt' 'all IPs') } else { '' })) }
     HW '</div></div>'
     HW '<div class="card" id="secfiles"><h2>Package files &middot; out-of-scope</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:6px">raw artifacts - click to open (works when this report is viewed from inside its package folder)</div>'
@@ -1315,7 +1317,7 @@ function Get-TargetIP {
             if ($ips.Count) {
                 $script:AllIPs = $ips
                 Write-Log ("Resolved $Target -> {0} (DNS, pragmatic mode)" -f ($ips -join ', ')) 'OK'
-                if ($ips.Count -gt 1) { Write-Log "$($ips.Count) A records - P3/P4 scan the first; all recorded in ip.txt" 'INFO' }
+                if ($ips.Count -gt 1) { Write-Log "$($ips.Count) A records - P3 scans all (CVEs/reputation per IP); P4 excludes them as edges; all recorded in ip.txt" 'INFO' }
                 return $ips[0]
             }
         } catch { Write-Log "Resolve-DnsName failed: $($_.Exception.Message)" 'WARN' }
@@ -1456,23 +1458,43 @@ function Phase3-Scan {
     param($IP)
     Write-Log 'P3  internet-scan data'
     if (-not $IP) { Write-Log 'no IP -> skip P3' 'SKIP'; return }
+    # Cover EVERY resolved A record, not just the first - a host behind >1 IP can expose different CVEs / reputation
+    # per edge. Capped at 8 to stay polite on round-robin DNS (those extras are edges, not distinct origins anyway).
+    $ips = @(@($script:AllIPs) | Where-Object { $_ } | Select-Object -Unique); if (-not $ips.Count) { $ips = @($IP) }
+    if ($ips.Count -gt 8) { Write-Log ("P3: {0} IPs resolved - scanning the first 8" -f $ips.Count) 'INFO'; $ips = @($ips | Select-Object -First 8) }
     # NOTE: port/service enumeration is intentionally NOT done here - that is owned by the separate active nmap scan
     # run inside the VDI. P3 keeps only the passive intel nmap does not give you: InternetDB CVEs/CPEs + IP reputation.
-    $idb = Invoke-Json "https://internetdb.shodan.io/$IP"
-    if ($idb) {
-        Save-Json  (Join-Path $pkg '03_scan\internetdb.json') $idb
-        Write-Log ('InternetDB: cpes {0} | vulns {1} | hostnames {2} (ports left to the in-VDI nmap scan)' -f @($idb.cpes).Count, @($idb.vulns).Count, @($idb.hostnames).Count) 'OK'
-        if ($idb.cpes)  { Save-Lines (Join-Path $pkg '08_tech\cpes.txt') $idb.cpes }
-        if ($idb.vulns) { Save-Lines (Join-Path $pkg '08_tech\internetdb_vulns.txt') $idb.vulns }
-        foreach ($hn in $idb.hostnames) { Add-OOS $hn 'InternetDB hostname' }
+    $allCpes = New-Object System.Collections.Generic.List[string]
+    $allVulns = New-Object System.Collections.Generic.List[string]
+    foreach ($cur in $ips) {
+        $idb = Invoke-Json "https://internetdb.shodan.io/$cur"
+        if (-not $idb) { continue }
+        Save-Json (Join-Path $pkg ('03_scan\internetdb_{0}.json' -f ($cur -replace '[^0-9A-Fa-f.:]', '_'))) $idb
+        foreach ($c in @($idb.cpes))  { if ($c -and -not $allCpes.Contains([string]$c))  { $allCpes.Add([string]$c) } }
+        foreach ($v in @($idb.vulns)) { if ($v -and -not $allVulns.Contains([string]$v)) { $allVulns.Add([string]$v) } }
+        foreach ($hn in @($idb.hostnames)) { Add-OOS $hn 'InternetDB hostname' }
+        Write-Log ('InternetDB {0}: cpes {1} | vulns {2} | ports {3}' -f $cur, @($idb.cpes).Count, @($idb.vulns).Count, @($idb.ports).Count) 'OK'
     }
+    # aggregate so Build-Report (reads $idb.cpes / $idb.vulns) surfaces the UNION across all IPs.
+    # Per-IP detail stays in the recon log + the per-IP internetdb_<ip>.json raw files (no perIP field here -
+    # PS5.1 ConvertTo-Json chokes on a List[object] of PSCustomObjects).
+    Save-Json (Join-Path $pkg '03_scan\internetdb.json') ([pscustomobject]@{ ips = @($ips); cpes = @($allCpes); vulns = @($allVulns) })
+    if ($allCpes.Count)  { Save-Lines (Join-Path $pkg '08_tech\cpes.txt') $allCpes }
+    if ($allVulns.Count) { Save-Lines (Join-Path $pkg '08_tech\internetdb_vulns.txt') $allVulns }
+    Write-Log ('InternetDB total across {0} IP(s): cpes {1} | vulns {2} (ports left to the in-VDI nmap scan)' -f $ips.Count, $allCpes.Count, $allVulns.Count) 'OK'
     if (Have-Key 'AbuseIPDB') {
-        # IP reputation (abuse score / reports / usage type / TOR) for the host's IP - free 1000 checks/day
-        $ab = Invoke-Json "https://api.abuseipdb.com/api/v2/check?ipAddress=$IP&maxAgeInDays=90" @{ Key = $Keys.AbuseIPDB; Accept = 'application/json' }
-        if ($ab -and $ab.data) {
-            Save-Json (Join-Path $pkg '03_scan\abuseipdb.json') $ab.data
-            Write-Log ('AbuseIPDB: score {0}/100, {1} report(s), usage="{2}"{3}' -f $ab.data.abuseConfidenceScore, $ab.data.totalReports, $ab.data.usageType, $(if ($ab.data.isTor) { ', TOR exit' } else { '' })) $(if ([int]$ab.data.abuseConfidenceScore -ge 25) { 'WARN' } else { 'OK' })
+        # IP reputation (abuse score / reports / usage type / TOR) for EACH resolved IP - free 1000 checks/day.
+        # The report headlines the WORST-scoring IP; the full per-IP breakdown lands in abuseipdb_all.txt.
+        $worst = $null; $repLines = New-Object System.Collections.Generic.List[string]
+        foreach ($cur in $ips) {
+            $ab = Invoke-Json "https://api.abuseipdb.com/api/v2/check?ipAddress=$cur&maxAgeInDays=90" @{ Key = $Keys.AbuseIPDB; Accept = 'application/json' }
+            if (-not ($ab -and $ab.data)) { continue }
+            $repLines.Add(('{0}  score {1}/100  {2} report(s)  usage="{3}"{4}' -f $cur, $ab.data.abuseConfidenceScore, $ab.data.totalReports, $ab.data.usageType, $(if ($ab.data.isTor) { '  TOR' } else { '' })))
+            if (-not $worst -or [int]$ab.data.abuseConfidenceScore -gt [int]$worst.abuseConfidenceScore) { $worst = $ab.data }
+            Write-Log ('AbuseIPDB {0}: score {1}/100, {2} report(s), usage="{3}"{4}' -f $cur, $ab.data.abuseConfidenceScore, $ab.data.totalReports, $ab.data.usageType, $(if ($ab.data.isTor) { ', TOR exit' } else { '' })) $(if ([int]$ab.data.abuseConfidenceScore -ge 25) { 'WARN' } else { 'OK' })
         }
+        if ($worst) { Save-Json (Join-Path $pkg '03_scan\abuseipdb.json') $worst }
+        if ($repLines.Count -gt 1) { Save-Lines (Join-Path $pkg '03_scan\abuseipdb_all.txt') $repLines }
     }
 }
 
@@ -1524,7 +1546,7 @@ function Phase4-Origin {
         if ($nd) { Save-Json (Join-Path $pkg '04_origin\netlas_domain.json') $nd }
     }
 
-    $candUniq = @($candSrc.Keys | Sort-Object -Unique | Where-Object { $_ -and $_ -ne $IP })
+    $candUniq = @($candSrc.Keys | Sort-Object -Unique | Where-Object { $_ -and $_ -ne $IP -and (@($script:AllIPs) -notcontains $_) })
     Save-Lines (Join-Path $pkg '04_origin\candidates.txt') $candUniq
     if ($candUniq.Count) {
         # score EACH candidate's confidence from its evidence: cert-pivot providers (the IP presents the target's cert)
