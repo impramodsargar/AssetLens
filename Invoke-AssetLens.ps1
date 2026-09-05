@@ -49,6 +49,10 @@ param(
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $env:PYTHONIOENCODING = 'utf-8'   # keep Python tools (uro/waymore) from crashing on non-cp1252 stdout on Windows
+# resilience: count genuine external-source availability failures (timeout / 5xx / 429) so a degraded run is
+# summarised once at the end rather than only as scattered [WARN] lines. 404/403/401 = the source responded, not a failure.
+$script:HttpFails = 0
+$script:FailedSources = New-Object System.Collections.Generic.List[string]
 
 # resolve the script's own folder. $PSScriptRoot is EMPTY when launched as `powershell -File .\Invoke-AssetLens.ps1`
 # (relative path) on Windows PowerShell, so fall back through other sources, then to the current directory.
@@ -988,6 +992,12 @@ function Invoke-Json {
             if ($i -lt $Retries -and ($null -eq $code -or $code -ge 500 -or $code -eq 429)) { Start-Sleep -Seconds (2 * ($i + 1)); continue }
             $safe = $Url -replace '(?i)([?&](key|apikey|api_key|token|access_token)=)[^&]*', '$1<redacted>'
             Write-Log "HTTP fail: $safe -- $($_.Exception.Message)" 'WARN'
+            # tally only availability failures (no response / 5xx / 429) - a 4xx means the source answered
+            if ($null -eq $code -or $code -ge 500 -or $code -eq 429) {
+                $script:HttpFails++
+                $fh = $Url; try { $fh = ([uri]$Url).Host } catch {}
+                if ($fh -and -not $script:FailedSources.Contains($fh)) { $script:FailedSources.Add($fh) }
+            }
             return $null
         }
     }
@@ -2203,6 +2213,8 @@ foreach ($k in $phases.Keys) {
     if ($want -notcontains $k) { continue }
     try { & $phases[$k] } catch { Write-Log "phase $k failed: $($_.Exception.Message)" 'WARN' }
 }
+# resilience summary: make a degraded run visible at a glance (scattered [WARN]s are easy to miss)
+if ($script:HttpFails -gt 0) { Write-Log ("{0} external request(s) failed to respond across {1} source(s): {2} - report is complete from the sources that did respond" -f $script:HttpFails, @($script:FailedSources).Count, (@($script:FailedSources) -join ', ')) 'WARN' }
 
 # -Phase rerun: rebuild the report from the updated package, then stop - don't clobber OOS/manifest/zip with a partial run
 if ($RerunPkg) {
