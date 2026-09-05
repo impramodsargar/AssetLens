@@ -512,13 +512,17 @@ function Build-Report {
     HW ('<title>recon - {0}</title>' -f (HE $host_))
     HW '<style>'
     HW ':root{--bg:#f6f7f9;--card:#fff;--tile:#eef1f4;--text:#1a1d21;--muted:#5c636b;--faint:#8a9099;--border:#e3e6ea;--dn:#c0392b;--dn-bg:#fbe9e7;--wn:#a96a09;--wn-bg:#f8efda;--ok:#1c7a55;--ok-bg:#e4f3ec;--info:#1f6feb;--info-bg:#e8f0fe}'
-    HW '@media(prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#161b22;--tile:#1c2230;--text:#e6edf3;--muted:#9aa4b2;--faint:#6b7480;--border:#2a313c;--dn:#ff6b5e;--dn-bg:#2d1714;--wn:#e0a33a;--wn-bg:#2a2110;--ok:#3fb98a;--ok-bg:#102a20;--info:#58a6ff;--info-bg:#0e1f33}}'
+    HW ':root[data-theme=dark]{--bg:#0e1116;--card:#161b22;--tile:#1c2230;--text:#e6edf3;--muted:#9aa4b2;--faint:#6b7480;--border:#2a313c;--dn:#ff6b5e;--dn-bg:#2d1714;--wn:#e0a33a;--wn-bg:#2a2110;--ok:#3fb98a;--ok-bg:#102a20;--info:#58a6ff;--info-bg:#0e1f33}'
+    HW '@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0e1116;--card:#161b22;--tile:#1c2230;--text:#e6edf3;--muted:#9aa4b2;--faint:#6b7480;--border:#2a313c;--dn:#ff6b5e;--dn-bg:#2d1714;--wn:#e0a33a;--wn-bg:#2a2110;--ok:#3fb98a;--ok-bg:#102a20;--info:#58a6ff;--info-bg:#0e1f33}}'
     HW '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:24px;font-size:15px}'
     HW '.wrap{max-width:980px;margin:0 auto}.mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}'
     HW 'h1{font-size:24px;font-weight:600;margin:0}h2{font-size:15px;font-weight:600;margin:0 0 12px}'
     HW '.pill{font-size:12px;padding:4px 11px;border-radius:6px;font-weight:500;white-space:nowrap;display:inline-block}'
     HW '.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:10px;margin:18px 0}'
     HW '.tile{background:var(--tile);border-radius:8px;padding:13px 15px}.tile .l{font-size:12px;color:var(--muted)}.tile .n{font-size:26px;font-weight:600;margin-top:2px}'
+    HW 'a.tile{color:inherit;display:block;text-decoration:none;transition:background .12s,transform .12s}a.tile:hover{background:var(--border);transform:translateY(-1px)}a.tile .l::after{content:" \2197";color:var(--faint);font-size:10px}'
+    HW '.tbtn{cursor:pointer;background:var(--tile);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:500}.tbtn:hover{color:var(--text)}'
+    HW 'h2 .sn{color:var(--faint);font-weight:600;margin-right:4px}.card{scroll-margin-top:14px}'
     HW '.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:17px 20px;margin-bottom:13px}'
     HW '.sev{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;white-space:nowrap}'
     HW '.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)}'
@@ -529,22 +533,25 @@ function Build-Report {
     HW '</style></head><body><div class="wrap">'
     HW '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
     HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; {4}</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)), $(if ($hasLive) { 'ACTIVE PROBE' } else { 'PASSIVE RECON' }))
+    HW '<div style="display:flex;align-items:center;gap:8px">'
+    HW '<button id="themeBtn" class="tbtn" type="button" title="toggle light / dark">theme</button>'
     HW $(if ($hasLive) { '<span class="pill" style="background:var(--wn-bg);color:var(--wn)">active &middot; -Probe sent traffic</span>' } elseif ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
     HW '</div>'
+    HW '</div>'
     HW '<div class="tiles">'
-    HW ('<div class="tile"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></div>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<div class="tile"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></div>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<div class="tile"><div class="l">endpoints</div><div class="n">{0}</div></div>' -f $(if (Test-Path (P '06_js\endpoints.txt')) { FLink '06_js\endpoints.txt' @($xEnd).Count } else { @($xEnd).Count }))
-    HW ('<div class="tile"><div class="l">live secrets</div><div class="n"{1}>{0}</div></div>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<div class="tile"><div class="l">out-of-scope</div><div class="n">{0}</div></div>' -f $oosClean.Count)
-    if ($hasLive) { HW ('<div class="tile"><div class="l">live URLs</div><div class="n" style="color:var(--ok)">{0}</div></div>' -f @($liveUrls).Count) }
+    HW ('<a class="tile" href="#sec2"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></a>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#sec2"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#sec4"><div class="l">endpoints</div><div class="n">{0}</div></a>' -f @($xEnd).Count)
+    HW ('<a class="tile" href="#sec5"><div class="l">live secrets</div><div class="n"{1}>{0}</div></a>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#secfiles"><div class="l">out-of-scope</div><div class="n">{0}</div></a>' -f $oosClean.Count)
+    if ($hasLive) { HW ('<a class="tile" href="#seclive"><div class="l">live URLs</div><div class="n" style="color:var(--ok)">{0}</div></a>' -f @($liveUrls).Count) }
     HW '</div>'
     # priority testing queue (reuses $p1/$p2/$p3 built for the markdown report) - the actionable centerpiece, up top
     HW '<div class="card"><h2>priority testing queue</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:4px">Ranked from AssetLens signals &middot; discovery &ne; confirmation - live-verify before reporting.</div>'
     foreach ($tq in @([pscustomobject]@{ n = 'Priority 1 &middot; test first'; c = 'var(--dn)'; items = $p1 }, [pscustomobject]@{ n = 'Priority 2 &middot; notable'; c = 'var(--wn)'; items = $p2 }, [pscustomobject]@{ n = 'Priority 3 &middot; context'; c = 'var(--muted)'; items = $p3 })) {
         HW ('<div style="font-weight:700;color:{0};font-size:12px;letter-spacing:.3px;margin-top:8px">{1}</div>' -f $tq.c, $tq.n)
-        if (@($tq.items).Count) { HW '<ul style="margin:3px 0 4px;padding-left:18px;font-size:13px;line-height:1.6">'; foreach ($it in $tq.items) { $x = HE $it; $x = $x -replace '\*\*(.+?)\*\*', '<b>$1</b>' -replace '`(.+?)`', '<code style="font-size:12px">$1</code>'; HW "<li>$x</li>" }; HW '</ul>' } else { HW '<div class="muted" style="font-size:12px;margin:2px 0">(nothing in this tier)</div>' }
+        if (@($tq.items).Count) { HW '<ul style="margin:3px 0 4px;padding-left:18px;font-size:13px;line-height:1.6">'; foreach ($it in $tq.items) { $x = HE $it; $x = $x -replace '\*\*(.+?)\*\*', '<b>$1</b>' -replace '`(.+?)`', '<code style="font-size:12px">$1</code>' -replace '\(section (\d)\)', '(<a href="#sec$1">section $1</a>)'; HW "<li>$x</li>" }; HW '</ul>' } else { HW '<div class="muted" style="font-size:12px;margin:2px 0">(nothing in this tier)</div>' }
     }
     HW '</div>'
     # recon coverage: historical vs live at a glance
@@ -555,7 +562,7 @@ function Build-Report {
     HW ('<div style="font-size:12px;margin-top:8px">{0}</div>' -f $(if (@($liveUrls).Count) { ('<span style="color:var(--ok);font-weight:600">Current-state: VERIFIED</span> - {0} live; the rest are historical (not proof they still exist).' -f @($liveUrls).Count) } else { '<span style="color:var(--wn);font-weight:600">Current-state: HISTORICAL ONLY</span> - nothing verified live; run -Probe (authorised) to confirm.' }))
     HW '</div>'
     if ($hasLive) {
-        HW '<div class="card"><h2>live / active surface &middot; -Probe</h2>'
+        HW '<div class="card" id="seclive"><h2>live / active surface &middot; -Probe</h2>'
         HW ('<div class="muted" style="font-size:13px">httpx probed <span style="color:var(--text);font-weight:500">{0}</span> in-scope URL(s) &rarr; <span style="color:var(--ok);font-weight:600">{1}</span> live (2xx/3xx/401/403) &middot; coverage-compare feed</div>' -f @($liveCands).Count, @($liveUrls).Count)
         if (@($liveApi).Count) {
             HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">live JS API endpoint(s) - HTTP method + params from the current code</span></div>' -f @($liveApi).Count)
@@ -592,7 +599,7 @@ function Build-Report {
         HW '</div></div>'
     }
     HW '<div class="grid2">'
-    HW '<div class="card"><h2>vulnerable JS libraries</h2>'
+    HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> vulnerable JS libraries</h2>'
     if ($libs.Count) {
         HW ('<div class="bar"><div style="flex:{0};background:var(--dn)"></div><div style="flex:{1};background:var(--wn)"></div><div style="flex:{2};background:var(--faint)"></div></div>' -f $sevHi, $sevMd, $sevLo)
         HW ('<div class="muted" style="font-size:12px;margin-bottom:4px">{0} high &middot; {1} medium &middot; {2} low</div>' -f $sevHi, $sevMd, $sevLo)
@@ -606,7 +613,7 @@ function Build-Report {
         }
     } else { HW '<div class="muted">none flagged.</div>' }
     HW '</div>'
-    HW '<div class="card"><h2>secret triage</h2>'
+    HW '<div class="card" id="sec5"><h2><span class="sn">5 &middot;</span> secret triage</h2>'
     HW ('<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px"><span style="font-size:26px;font-weight:600">{0}</span><span class="muted" style="font-size:13px">high-confidence</span></div>' -f $secN)
     if ($thVer.Count) { HW ('<div class="row" style="border-top:none"><span>trufflehog verified</span><span class="sev" style="background:var(--dn-bg);color:var(--dn)">{0} live</span></div>' -f $thVer.Count) }
     if ($glSpec.Count) { HW ('<div class="row"><span>gitleaks specific rule</span><span class="sev" style="background:var(--wn-bg);color:var(--wn)">{0}</span></div>' -f $glSpec.Count) }
@@ -619,7 +626,7 @@ function Build-Report {
     }
     if (-not $secN -and -not $fpN) { HW '<div class="muted">no secrets flagged.</div>' }
     HW '</div></div>'
-    HW '<div class="card"><h2>tech &amp; DNS</h2>'
+    HW '<div class="card" id="sec1"><h2><span class="sn">1 &middot;</span> tech &amp; DNS</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:8px">ports &amp; services: run the separate nmap scan (in-VDI)</div>'
     if ($cpes.Count) { HW ('<div class="muted" style="font-size:13px">tech: {0}</div>' -f (HE (($cpes | Select-Object -First 6) -join ', '))) }
     if (@($dns).Count) {
@@ -645,7 +652,7 @@ function Build-Report {
         HW '</div>'
     }
     if (@($cands).Count) {
-        HW '<div class="card"><h2>origin candidates - WAF bypass</h2>'
+        HW '<div class="card" id="sec3"><h2><span class="sn">3 &middot;</span> origin candidates - WAF bypass</h2>'
         $cShow = $(if (@($candsEnr).Count) { $candsEnr } else { $cands })
         $cfirst = $true
         foreach ($c in $cShow) {
@@ -673,7 +680,7 @@ function Build-Report {
         }
         HW '</div>'
     }
-    HW '<div class="card"><h2>attack surface</h2>'
+    HW '<div class="card" id="sec4"><h2><span class="sn">4 &middot;</span> attack surface</h2>'
     HW '<div class="muted" style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px">'
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> archived URLs</span>' -f @($allUrls).Count)
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> deduped</span>' -f @($dedupUrls).Count)
@@ -690,7 +697,7 @@ function Build-Report {
         if (@($cloud).Count -gt 6) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\cloud_assets.txt' ('all ' + @($cloud).Count + ' URLs'))) }
         HW '<div class="muted" style="font-size:12px;margin-top:4px">check for public / listable buckets</div></div>'
     }
-    HW '<div class="card"><h2>OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
+    HW '<div class="card" id="sec6"><h2><span class="sn">6 &middot;</span> OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
     HW ('<div class="muted">org emails: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($emails).Count)
     if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($breach).Count) }
     if ($tranco.ranks) { HW ('<div class="muted">Tranco rank: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f $tranco.ranks[0].rank) }
@@ -698,7 +705,7 @@ function Build-Report {
     if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <span style="font-weight:500;color:{0}">{1}</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--text)' }), $opc) }
     if ($abuse) { HW ('<div class="muted">AbuseIPDB: <span style="font-weight:500;color:{0}">{1}/100</span> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--text)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType))) }
     HW '</div></div>'
-    HW '<div class="card"><h2>package files</h2>'
+    HW '<div class="card" id="secfiles"><h2>package files &middot; out-of-scope</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:6px">raw artifacts - click to open (works when this report is viewed from inside its package folder)</div>'
     HW '<div class="files mono">'
     foreach ($d in @('01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech')) { if (Test-Path (P $d)) { HW (FLink ($d + '\') ($d + '/')) } }
@@ -706,6 +713,7 @@ function Build-Report {
     foreach ($fdoc in @('Index.md', 'Verify.md', 'OOS_observed.txt', 'manifest.sha256', 'recon.log', '05_history\all_urls.txt', '05_history\uris.txt', '06_js\endpoints.txt', '06_js\wordlist.txt')) { if (Test-Path (P $fdoc)) { HW (FLink $fdoc) } }
     HW '</div></div>'
     HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test</div>' -f $oosClean.Count)
+    HW '<script>(function(){var r=document.documentElement,b=document.getElementById("themeBtn");if(!b)return;function cur(){return r.getAttribute("data-theme")||(window.matchMedia&&window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");}try{var s=localStorage.getItem("al-theme");if(s)r.setAttribute("data-theme",s);}catch(e){}function upd(){b.textContent=cur()==="dark"?"light mode":"dark mode";}upd();b.addEventListener("click",function(){var n=cur()==="dark"?"light":"dark";r.setAttribute("data-theme",n);try{localStorage.setItem("al-theme",n);}catch(e){}upd();});})();</script>'
     HW '</div></body></html>'
     [System.IO.File]::WriteAllText((P 'Report.html'), ($h -join "`n"), $u8)
     Write-Host "Report written: $(P 'Report.md')  +  Report.html" -ForegroundColor Green
