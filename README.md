@@ -47,7 +47,7 @@ flowchart TB
         P4["P4 · Origin — passive-DNS · CriminalIP/Quake cert→IP pivot (WAF bypass)"]
         P5["P5 · History — waymore + gau archives · uro dedup"]
         P6["P6 · JS mining — endpoints · params · secrets · cloud · WebSockets · source-map rebuild ·<br/>DOM-XSS/postMessage/GraphQL · gf bug-class buckets · tech fingerprint"]
-        P7["P7 · OSINT — OTX · LeakIX · GitHub code+emails · breach-check · Tranco"]
+        P7["P7 · OSINT — OTX · LeakIX · GitHub code+emails · breach-check · public Postman leak · Tranco"]
         P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
     end
 
@@ -136,7 +136,7 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 | **P4 Origin** | passive-DNS (VirusTotal · SecurityTrails) · **CriminalIP / Quake cert→IP pivot** (WAF bypass) · Netlas | keyed |
 | **P5 History** | `waymore` + `gau` archives (Wayback · CommonCrawl · OTX · URLScan) · `uro` dedup | keyless |
 | **P6 JS mining** | endpoints · params · wordlist · cloud assets · **WebSockets** · secrets (`trufflehog`/`gitleaks`/`jsluice` + custom patterns) · `retire.js` vuln-libs · Wappalyzer fingerprint · **source-map reconstruction** · jsluice AST **API map + DOM-XSS/postMessage/GraphQL deep pass** · **gf-style bug-class buckets** (xss/sqli/ssrf/lfi/redirect/rce/ssti/idor) | keyless core |
-| **P7 OSINT** | AlienVault OTX · LeakIX · GitHub code + commit-emails · LeakCheck breach-check · Tranco · SpiderFoot | mixed |
+| **P7 OSINT** | AlienVault OTX · LeakIX · GitHub code + commit-emails · LeakCheck breach-check · **public Postman leak** (keyless; searches Postman's public collections for the target domain, surfaces only in-scope requests + leaked auth/keys) · Tranco · SpiderFoot | mixed |
 | **P8 Live** *(`-Probe`, active)* | `httpx` liveness · robots / sitemap / `.well-known` · live-JS re-mine · `.js.map` reconstruct → `08_live\` | active |
 
 Missing a tool or key? That step logs `SKIP` and the run continues — coverage scales with what you have installed.

@@ -400,10 +400,18 @@ function Build-Report {
     if ($glGen.Count) { W ("- gitleaks: {0} generic-api-key match(es) - high-false-positive rule on minified/archived JS; triage, don't trust the count" -f $glGen.Count) }
     if (Has '07_osint\leakix_host.json') { W "- **LeakIX**: exposures captured in 07_osint\leakix_host.json (review)" }
     if (@($ghHits).Count) { W ("- **GitHub code**: {0} hit(s) referencing the host - 07_osint\github_hits.txt" -f @($ghHits).Count) }
+    $pmLines = @(GLines '07_osint\postman.txt')
+    if ($pmLines.Count) {
+        $pmSecN = @($pmLines | Where-Object { $_ -match 'POTENTIAL SECRET' }).Count
+        $pmConf = @($pmLines | Where-Object { $_ -match '\[in-scope ' }).Count
+        $pmTmpl = @($pmLines | Where-Object { $_ -match '\[templated-verify ' }).Count
+        if ($pmConf -or $pmSecN) { $anySecret = $true }
+        W ("- **Public Postman**: {0} in-scope request(s) in public collections ({1} host-confirmed, {2} templated){3} - 07_osint\postman.txt" -f ($pmConf + $pmTmpl), $pmConf, $pmTmpl, $(if ($pmSecN) { ", **" + $pmSecN + " potential secret(s)**" } else { '' }))
+    }
     if (@($cloud).Count) { W ("- **Cloud storage**: {0} S3/Azure/GCS/Firebase URL(s) in archived JS - 06_js\cloud_assets.txt (check for public/listable buckets)" -f @($cloud).Count) }
     if (@($smSrc).Count) { $anySecret = $true; W ("- **Source maps**: {0} original source path(s) recovered from archived .js.map - 06_js\sourcemap_sources.txt (internal app structure exposed)" -f @($smSrc).Count) }
     if (@($smRef).Count) { W ("- Source-map refs: {0} .map URL(s) - 06_js\sourcemap_refs.txt (fetch from the archive to recover source)" -f @($smRef).Count) }
-    if (-not $anySecret -and -not $thUnv.Count -and -not $glGen.Count -and -not @($smRef).Count -and -not (Has '07_osint\leakix_host.json') -and -not @($ghHits).Count -and -not @($cloud).Count) { W "_No secrets/leaks flagged._" }
+    if (-not $anySecret -and -not $thUnv.Count -and -not $glGen.Count -and -not @($smRef).Count -and -not (Has '07_osint\leakix_host.json') -and -not @($ghHits).Count -and -not @($cloud).Count -and -not $pmLines.Count) { W "_No secrets/leaks flagged._" }
     W ""
     W "## 6. OSINT / exposure"
     W ("- Org emails: **{0}**" -f @($emails).Count) ; if (@($emails).Count) { W ("  - " + ((@($emails) | Select-Object -First 15) -join ', ')) }
@@ -954,6 +962,47 @@ function Get-BugClassBuckets {
         foreach ($k in $cls.Keys) { foreach ($n in $names) { if ($sets[$k] -contains $n) { [void]$out[$k].Add($u); break } } }
     }
     return $out
+}
+function Get-PostmanLeaks {
+    # Keyless OSINT: search Postman's PUBLIC data (www.postman.com/_api/ws/proxy -> search-all) for the target domain
+    # and surface only requests scoped to IT: URL host == target (confirmed in-scope), or a templated {{var}} host that
+    # matched the target search (labelled - verify). Requests with a literal OTHER host are DROPPED (off-scope). Then
+    # fetch each in-scope request's detail (/_api/request/{id}) to expose leaked auth/keys. No API key needed.
+    param([string]$Target, [string]$Package)
+    $ua = @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    $confirmed = New-Object System.Collections.Generic.List[object]
+    $templated = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object System.Collections.Generic.HashSet[string]; $err = $false
+    for ($from = 0; $from -lt 150; $from += 25) {
+        $sb = @{ service = 'search'; method = 'POST'; path = '/search-all'; body = @{ queryIndices = @('runtime.request'); queryText = $Target; size = 25; from = $from; requestOrigin = 'srp'; mergeEntities = 'true'; nonNestedRequests = 'true' } } | ConvertTo-Json -Depth 6
+        $sr = $null; try { $sr = Invoke-RestMethod 'https://www.postman.com/_api/ws/proxy' -Method Post -Body $sb -ContentType 'application/json' -Headers $ua -TimeoutSec 20 -ErrorAction Stop } catch { $err = $true; break }
+        $rows = @($sr.data); if (-not $rows.Count) { break }
+        foreach ($row in $rows) {
+            $d = $row.document; if (-not $d) { continue }
+            $u = [string]$d.url; if (-not $u) { continue }
+            if (-not $seen.Add(([string]$d.id) + '|' + $u)) { continue }
+            $rec = [pscustomobject]@{ id = [string]$d.id; method = [string]$d.method; url = $u; ws = [string]$d.workspaceName; pub = [string]$d.publisherHandle; slug = [string]$d.workspaceSlug }
+            if ($u -match '^https?://([^/:]+)') { if (Test-InScope $matches[1]) { $confirmed.Add($rec) } }   # literal host: keep only target; else drop
+            elseif ($u -match '\{\{') { $templated.Add($rec) }                                               # templated host that matched our domain -> verify
+        }
+        if ($rows.Count -lt 25) { break }
+    }
+    $all = New-Object System.Collections.Generic.List[object]; $all.AddRange($confirmed); $all.AddRange($templated)
+    if (-not $all.Count) { Write-Log ('Postman public leak: 0 in-scope request(s)' + $(if ($err) { ' (search errored/blocked)' } else { '' })) $(if ($err) { 'SKIP' } else { 'OK' }); return }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $confirmed) { $lines.Add(('{0,-6} {1}   [in-scope | ws: {2} -> https://www.postman.com/{3}/{4}]' -f $r.method, $r.url, $r.ws, $r.pub, $r.slug)) }
+    foreach ($r in $templated) { $lines.Add(('{0,-6} {1}   [templated-verify | ws: {2} -> https://www.postman.com/{3}/{4}]' -f $r.method, $r.url, $r.ws, $r.pub, $r.slug)) }
+    $secRx = '(?i)(bearer\s+[a-z0-9._\-]{16,}|AIza[0-9A-Za-z_\-]{35}|AKIA[0-9A-Z]{16}|glpat-[\w\-]{20}|xox[baprs]-[\w\-]{10,}|sk_live_[0-9a-z]{20,}|(?:api[_\-]?key|apikey|access[_\-]?token|client[_\-]?secret|authorization|x-api-key)["'':=\s]{1,4}[a-z0-9._\-]{16,})'
+    $secN = 0; $fetched = 0
+    foreach ($r in $all) {
+        if ($fetched -ge 40) { break }; $fetched++
+        $det = $null; try { $det = Invoke-RestMethod ('https://www.postman.com/_api/request/{0}' -f $r.id) -Headers $ua -TimeoutSec 15 -ErrorAction Stop } catch { continue }
+        if (-not $det) { continue }
+        Save-Json (Join-Path $Package ('07_osint\postman_req_{0}.json' -f ($r.id -replace '[^0-9A-Za-z]', '_'))) $det
+        foreach ($m in [regex]::Matches(($det | ConvertTo-Json -Depth 10 -Compress), $secRx)) { $v = $m.Value; if ($v.Length -gt 90) { $v = $v.Substring(0, 90) + '...' }; $lines.Add('   [POTENTIAL SECRET] ' + $v + '  <= ' + $r.url); $secN++ }
+    }
+    Save-Lines (Join-Path $Package '07_osint\postman.txt') $lines
+    Write-Log ('Postman public leak: {0} in-scope ({1} host-confirmed + {2} templated), {3} potential secret(s) -> 07_osint\postman.txt' -f $all.Count, $confirmed.Count, $templated.Count, $secN) $(if ($confirmed.Count -or $secN) { 'WARN' } else { 'OK' })
 }
 function Get-JsluiceApiMap {
     # jsluice parses each JS file's AST and emits one record per call site: url + method + query/body params.
@@ -1673,6 +1722,10 @@ function Phase7-Osint {
         $lx = Invoke-Json "https://leakix.net/host/$IP" @{ 'api-key' = $Keys.LeakIX; Accept = 'application/json' }
         if ($lx) { Save-Json (Join-Path $pkg '07_osint\leakix_host.json') $lx; Write-Log 'LeakIX host ok' 'OK' }
     }
+
+    # Public Postman API-collection leak (keyless): search Postman's public data for the target domain; surface only
+    # in-scope requests (host == target, or a templated host that matched the domain) + any leaked auth/keys.
+    try { Get-PostmanLeaks -Target $Target -Package $pkg } catch { Write-Log "Postman search error: $($_.Exception.Message)" 'SKIP' }
 
     # SpiderFoot passive (optional, slow)
     if (-not $HttpOnly -and $Tools.SpiderFootDir -and (Test-Path (Join-Path $Tools.SpiderFootDir 'sf.py'))) {
