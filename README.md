@@ -177,6 +177,7 @@ The target is **one host**. Everything else the tools surface — SANs, subdomai
 - **Extending** — each phase is a `PhaseN-*` function; write into the matching `0N_` folder and call `Add-OOS` for anything off-host.
 - **"running scripts is disabled"** — that's PowerShell's ExecutionPolicy: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run once with `powershell -ExecutionPolicy Bypass -File .\Invoke-AssetLens.ps1 <host>`. If a GPO scope (`MachinePolicy` / `UserPolicy`) blocks it, involve IT.
 - **A tool reads `MISSING` after `-Setup`** — PATH needs refreshing: open a new shell, run `-Setup -SkipBase`, then `-Validate`. (`waymore` / `uro` install via pip; on a bleeding-edge Python use 3.12 for prebuilt wheels.)
+- **jsluice** — the AST JS analysis (API map + deep pass) is built from source with cgo, so `-Setup` installs a C compiler (WinLibs mingw, via winget) to build it. On a locked-down box without winget, install any C compiler, then `CGO_ENABLED=1 go install github.com/BishopFox/jsluice/cmd/jsluice@latest`.
 - **Never** point a hosted online scanner at the target — that is active-by-proxy and leaks the asset.
 
 </details>

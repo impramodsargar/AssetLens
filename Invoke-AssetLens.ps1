@@ -125,6 +125,7 @@ function Invoke-Setup {
         if (-not (Has node))   { WG 'OpenJS.NodeJS' }
         if (-not (Has git))    { WG 'Git.Git' }
         if (-not (Has jq))     { WG 'jqlang.jq' }
+        if (-not (Has gcc) -and -not (Has cc) -and -not (Has clang)) { WG 'BrechtSanders.WinLibs.POSIX.UCRT' }   # C toolchain (gcc) - jsluice's cgo build needs it
         # refresh PATH from the registry so runtimes winget just installed are visible THIS session - no restart.
         # (PowerShell's registry provider expands REG_EXPAND_SZ, so these come back as real, usable paths.)
         $mp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path -ErrorAction SilentlyContinue).Path
@@ -140,6 +141,23 @@ function Invoke-Setup {
         foreach ($m in $goMods) { Write-Host "  go install $m" -ForegroundColor DarkGray; go install $m }
         $gobin = Join-Path (& go env GOPATH) 'bin'
     } else { Write-Host 'go missing - skipping Go tools' -ForegroundColor Yellow }
+    # jsluice (BishopFox) - AST JS analysis: method/param API map + DOM-XSS/postMessage/GraphQL deep pass.
+    # No prebuilt binary is published upstream, so it must be `go install`ed WITH cgo -> needs a C compiler on PATH.
+    if (Has go) {
+        Write-Host 'jsluice (AST JS analysis - cgo build)...' -ForegroundColor Cyan
+        if (-not (Has gcc)) {   # WinLibs installs under the winget Packages dir but may not touch PATH - locate gcc and prepend it
+            $cc = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Recurse -Filter gcc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cc) { $env:Path = (Split-Path $cc.FullName -Parent) + ';' + $env:Path }
+        }
+        if (Has gcc) {
+            $env:CGO_ENABLED = '1'
+            Write-Host '  go install github.com/BishopFox/jsluice/cmd/jsluice@latest' -ForegroundColor DarkGray
+            go install github.com/BishopFox/jsluice/cmd/jsluice@latest
+            if ($LASTEXITCODE -eq 0) { Write-Host '  jsluice OK' -ForegroundColor Green } else { Write-Host '  jsluice build FAILED - see output above' -ForegroundColor Yellow }
+        } else {
+            Write-Host '  jsluice SKIPPED - no C compiler. Install one:  winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT  then re-run -Setup -SkipBase.' -ForegroundColor Yellow
+        }
+    }
     $binDest = if ($gobin) { $gobin } else { Join-Path $env:USERPROFILE 'go\bin' }
     New-Item -ItemType Directory -Force -Path $binDest | Out-Null
     Write-Host 'Prebuilt binaries (gitleaks / trufflehog)...' -ForegroundColor Cyan
@@ -155,7 +173,7 @@ function Invoke-Setup {
     Add-ToolPathsToSession   # make go\bin / Python Scripts / npm visible for the check below + this session
     Write-Host ''
     Write-Host 'Tool check:' -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'httpx', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
+    foreach ($t in 'subfinder', 'gau', 'httpx', 'jsluice', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq') {
         $ok = if ($t -eq 'httpx') { [bool](Get-HttpxPath) } else { (Has $t) -or ($binDest -and (Test-Path (Join-Path $binDest "$t.exe"))) }
         Write-Host ('  {0,-14} {1}' -f $t, $(if ($ok) { 'OK' } else { 'MISSING' })) -ForegroundColor $(if ($ok) { 'Green' } else { 'DarkGray' })
     }
@@ -705,7 +723,7 @@ function Invoke-Validate {
     function Show { param($name, $present, $res, $detail = '') if (-not $present) { Vline $name 'not set' 'DarkGray' } elseif ($res.ok) { Vline $name 'VALID' 'Green' $detail } else { Vline $name ("FAIL ({0})" -f $res.code) 'Red' } }
 
     Write-Host "`nTools:" -ForegroundColor Cyan
-    foreach ($t in 'subfinder', 'gau', 'httpx', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
+    foreach ($t in 'subfinder', 'gau', 'httpx', 'jsluice', 'waymore', 'uro', 'retire', 'gitleaks', 'trufflehog', 'jq', 'python') {
         $ok = if ($t -eq 'python') { Test-RealPython } elseif ($t -eq 'httpx') { [bool](Get-HttpxPath) } else { [bool](Get-Command $t -ErrorAction SilentlyContinue) }
         if ($ok) { Vline $t 'OK' 'Green' } else { Vline $t $(if ($t -eq 'python') { 'missing / Store stub' } else { 'missing' }) 'DarkGray' }
     }
