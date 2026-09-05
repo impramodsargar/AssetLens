@@ -503,6 +503,17 @@ function Build-Report {
     function SevS { param($s) switch -Regex ($s) { 'critical|high' { 'background:var(--dn-bg);color:var(--dn)' } 'medium' { 'background:var(--wn-bg);color:var(--wn)' } default { 'background:var(--tile);color:var(--muted)' } } }
     # FL: relative link to a package file/folder when it exists (Report.html sits at the package root; $rel uses backslashes, href is forward-slashed)
     function FLink { param($rel, $label) $disp = $(if ($label) { $label } else { $rel }); if (Test-Path (P $rel)) { ('<a href="{0}">{1}</a>' -f ($rel -replace '\\', '/'), (HE $disp)) } else { (HE $disp) } }
+    # UL: render a discovered endpoint/URL as a clickable link. Absolute URLs open as-is; site-relative paths are resolved
+    # onto the in-scope host. An optional "METHOD " prefix (jsluice API maps) is kept as plain text before the link.
+    function UL { param($u)
+        $t = [string]$u; $pre = ''
+        if ($t -match '^((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+)(.+)$') { $pre = $matches[1]; $t = $matches[2] }
+        $href = ''
+        if ($t -match '^https?://') { $href = $t } elseif ($t -match '^//') { $href = 'https:' + $t } elseif ($t -match '^/') { $href = 'https://' + $host_ + $t }
+        if ($href) { (HE $pre) + ('<a href="{0}" target="_blank" rel="noopener">{1}</a>' -f (HE $href), (HE $t)) } else { HE ($pre + $t) } }
+    # Mask: show only the head + tail of a secret so the report is triage-actionable without echoing full credentials
+    # (the full value stays in the linked _raw\ JSON). Used by the secret-triage section.
+    function Mask { param($s) $s = [string]$s; if ($s.Length -le 8) { '********' } else { $s.Substring(0, 4) + '...' + $s.Substring($s.Length - 4) } }
     $rankH = @{ 'critical' = 0; 'high' = 1; 'medium' = 2; 'low' = 3 }
     $sevHi = 0; $sevMd = 0; $sevLo = 0
     foreach ($lk in $libs.Keys) { $ls = [string]$libs[$lk].sev; if ($ls -match 'critical|high') { $sevHi++ } elseif ($ls -eq 'medium') { $sevMd++ } else { $sevLo++ } }
@@ -521,7 +532,7 @@ function Build-Report {
     HW '.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:10px;margin:18px 0}'
     HW '.tile{background:var(--tile);border-radius:8px;padding:13px 15px}.tile .l{font-size:12px;color:var(--muted)}.tile .n{font-size:26px;font-weight:600;margin-top:2px}'
     HW 'a.tile{color:inherit;display:block;text-decoration:none;transition:background .12s,transform .12s}a.tile:hover{background:var(--border);transform:translateY(-1px)}a.tile .l::after{content:" \2197";color:var(--faint);font-size:10px}'
-    HW '.tbtn{cursor:pointer;background:var(--tile);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:500}.tbtn:hover{color:var(--text)}'
+    HW '.tbtn{cursor:pointer;background:var(--tile);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 9px;display:inline-flex;align-items:center;line-height:0}.tbtn:hover{color:var(--text)}.tbtn svg{display:block;width:16px;height:16px}'
     HW 'h2 .sn{color:var(--faint);font-weight:600;margin-right:4px}.card{scroll-margin-top:14px}'
     HW '.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:17px 20px;margin-bottom:13px}'
     HW '.sev{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;white-space:nowrap}'
@@ -534,39 +545,39 @@ function Build-Report {
     HW '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
     HW ('<div><div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:var(--info)">ASSETLENS &middot; {4}</div><h1 style="margin-top:3px">{0}</h1><div class="mono" style="font-size:13px;color:var(--muted);margin-top:6px">{1}{2} &middot; {3}</div></div>' -f (HE $host_), $(if ($ip) { HE $ip } else { 'no IP' }), $(if ($owner) { ' &middot; ' + (HE $owner) } else { '' }), (HE (Split-Path $Package -Leaf)), $(if ($hasLive) { 'ACTIVE PROBE' } else { 'PASSIVE RECON' }))
     HW '<div style="display:flex;align-items:center;gap:8px">'
-    HW '<button id="themeBtn" class="tbtn" type="button" title="toggle light / dark">theme</button>'
+    HW '<button id="themeBtn" class="tbtn" type="button" title="toggle light / dark" aria-label="toggle light / dark theme"></button>'
     HW $(if ($hasLive) { '<span class="pill" style="background:var(--wn-bg);color:var(--wn)">active &middot; -Probe sent traffic</span>' } elseif ($cdnName) { '<span class="pill" style="background:var(--info-bg);color:var(--info)">behind ' + (HE $cdnName) + '</span>' } else { '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">passive &middot; 0 packets to target</span>' })
     HW '</div>'
     HW '</div>'
     HW '<div class="tiles">'
-    HW ('<a class="tile" href="#sec2"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></a>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<a class="tile" href="#sec2"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#sec2" title="host / service CVEs (Shodan InternetDB, tied to the IP)"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></a>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#sec2" title="vulnerable JS libraries (retire.js, from shipped front-end code)"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<a class="tile" href="#sec4"><div class="l">endpoints</div><div class="n">{0}</div></a>' -f @($xEnd).Count)
     HW ('<a class="tile" href="#sec5"><div class="l">live secrets</div><div class="n"{1}>{0}</div></a>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<a class="tile" href="#secfiles"><div class="l">out-of-scope</div><div class="n">{0}</div></a>' -f $oosClean.Count)
+    HW ('<a class="tile" href="OOS_observed.txt" title="open OOS_observed.txt - observed off-host assets, DO NOT TEST"><div class="l">out-of-scope</div><div class="n">{0}</div></a>' -f $oosClean.Count)
     if ($hasLive) { HW ('<a class="tile" href="#seclive"><div class="l">live URLs</div><div class="n" style="color:var(--ok)">{0}</div></a>' -f @($liveUrls).Count) }
     HW '</div>'
     # priority testing queue (reuses $p1/$p2/$p3 built for the markdown report) - the actionable centerpiece, up top
-    HW '<div class="card"><h2>priority testing queue</h2>'
+    HW '<div class="card"><h2>Priority testing queue</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:4px">Ranked from AssetLens signals &middot; discovery &ne; confirmation - live-verify before reporting.</div>'
     foreach ($tq in @([pscustomobject]@{ n = 'Priority 1 &middot; test first'; c = 'var(--dn)'; items = $p1 }, [pscustomobject]@{ n = 'Priority 2 &middot; notable'; c = 'var(--wn)'; items = $p2 }, [pscustomobject]@{ n = 'Priority 3 &middot; context'; c = 'var(--muted)'; items = $p3 })) {
         HW ('<div style="font-weight:700;color:{0};font-size:12px;letter-spacing:.3px;margin-top:8px">{1}</div>' -f $tq.c, $tq.n)
-        if (@($tq.items).Count) { HW '<ul style="margin:3px 0 4px;padding-left:18px;font-size:13px;line-height:1.6">'; foreach ($it in $tq.items) { $x = HE $it; $x = $x -replace '\*\*(.+?)\*\*', '<b>$1</b>' -replace '`(.+?)`', '<code style="font-size:12px">$1</code>' -replace '\(section (\d)\)', '(<a href="#sec$1">section $1</a>)'; HW "<li>$x</li>" }; HW '</ul>' } else { HW '<div class="muted" style="font-size:12px;margin:2px 0">(nothing in this tier)</div>' }
+        if (@($tq.items).Count) { HW '<ul style="margin:3px 0 4px;padding-left:18px;font-size:13px;line-height:1.6">'; foreach ($it in $tq.items) { $x = HE $it; $x = $x -replace '\*\*(.+?)\*\*', '<b>$1</b>' -replace '`(.+?)`', '<code style="font-size:12px">$1</code>' -replace '(https?://[^\s<]+)', '<a href="$1" target="_blank" rel="noopener">$1</a>' -replace '\(section (\d)\)', '(<a href="#sec$1">section $1</a>)'; HW "<li>$x</li>" }; HW '</ul>' } else { HW '<div class="muted" style="font-size:12px;margin:2px 0">(nothing in this tier)</div>' }
     }
     HW '</div>'
     # recon coverage: historical vs live at a glance
-    HW '<div class="card"><h2>recon coverage &middot; historical vs live</h2>'
+    HW '<div class="card"><h2>Recon coverage &middot; historical vs live</h2>'
     HW '<div style="display:flex;flex-wrap:wrap;gap:5px 14px;font-size:13px">'
     foreach ($cp in @(@('archived URLs', @($allUrls).Count), @('deduped', @($dedupUrls).Count), @('archived JS', @($jsUrls).Count), @('JS endpoints', @($xEnd).Count), @('API map', (@($jsApi).Count + @($liveApi).Count)), @('OpenAPI', @($apiEp).Count), @('WebSockets', $wsN), @('source-maps', @($smSrc).Count), @('LIVE-verified', @($liveUrls).Count))) { $hl = $(if ($cp[0] -eq 'LIVE-verified') { ' style="color:var(--ok);font-weight:600"' } else { '' }); HW ('<span{2}><span class="muted">{0}</span> {1}</span>' -f $cp[0], $cp[1], $hl) }
     HW '</div>'
     HW ('<div style="font-size:12px;margin-top:8px">{0}</div>' -f $(if (@($liveUrls).Count) { ('<span style="color:var(--ok);font-weight:600">Current-state: VERIFIED</span> - {0} live; the rest are historical (not proof they still exist).' -f @($liveUrls).Count) } else { '<span style="color:var(--wn);font-weight:600">Current-state: HISTORICAL ONLY</span> - nothing verified live; run -Probe (authorised) to confirm.' }))
     HW '</div>'
     if ($hasLive) {
-        HW '<div class="card" id="seclive"><h2>live / active surface &middot; -Probe</h2>'
+        HW '<div class="card" id="seclive"><h2>Live / active surface &middot; -Probe</h2>'
         HW ('<div class="muted" style="font-size:13px">httpx probed <span style="color:var(--text);font-weight:500">{0}</span> in-scope URL(s) &rarr; <span style="color:var(--ok);font-weight:600">{1}</span> live (2xx/3xx/401/403) &middot; coverage-compare feed</div>' -f @($liveCands).Count, @($liveUrls).Count)
         if (@($liveApi).Count) {
             HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">live JS API endpoint(s) - HTTP method + params from the current code</span></div>' -f @($liveApi).Count)
-            HW '<div class="src mono" style="line-height:1.9">'; foreach ($l in (ApiRank $liveApi | Select-Object -First 10)) { HW ((HE $l) + '<br>') }; HW '</div>'
+            HW '<div class="src mono" style="line-height:1.9">'; foreach ($l in (ApiRank $liveApi | Select-Object -First 10)) { HW ((UL $l) + '<br>') }; HW '</div>'
             if (@($liveApi).Count -gt 10) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '08_live\live_js_api.txt' ('all ' + @($liveApi).Count + ' endpoints'))) }
         }
         HW ('<div class="flink muted" style="margin-top:8px">open: {0} &middot; {1}</div>' -f (FLink '08_live\live_urls.txt' 'live_urls'), (FLink '08_live\live_uris.txt' 'live_uris'))
@@ -575,7 +586,7 @@ function Build-Report {
     if ($geo -and $worldPath -and $geo.latitude -and $geo.longitude) {
         $mpx = [Math]::Round((([double]$geo.longitude) + 180) * 1000 / 360)
         $mpy = [Math]::Round((90 - ([double]$geo.latitude)) * 500 / 180)
-        HW '<div class="card"><h2>host location</h2><div class="locgrid">'
+        HW '<div class="card"><h2>Host location</h2><div class="locgrid">'
         HW '<div style="border-radius:8px;overflow:hidden;border:0.5px solid var(--border)">'
         HW ('<svg viewBox="0 14 1000 478" width="100%" style="display:block"><rect y="14" width="1000" height="478" fill="#0a0f1e"/><path d="{0}" fill="#1c2536" stroke="#2c3a52" stroke-width="0.5"/>' -f $worldPath)
         HW ('<circle cx="{0}" cy="{1}" r="28" fill="#fb7185" opacity="0.12"/><circle cx="{0}" cy="{1}" r="16" fill="#fb7185" opacity="0.2"/><circle cx="{0}" cy="{1}" fill="none" stroke="#fb7185" stroke-width="2.5"><animate attributeName="r" values="9;36" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.85;0" dur="2s" repeatCount="indefinite"/></circle><circle cx="{0}" cy="{1}" r="9" fill="#fb7185" stroke="#fff" stroke-width="1.6"/><text x="{2}" y="{3}" font-size="22" fill="#cdd6e3" font-family="system-ui" font-weight="500">{4}</text></svg></div>' -f $mpx, $mpy, ($mpx + 14), ($mpy - 12), (HE ([string]$geo.city)))
@@ -588,7 +599,7 @@ function Build-Report {
         HW '</div></div></div>'
     }
     if ($m365 -and $m365.isAzureAD) {
-        HW '<div class="card"><h2>identity &middot; Microsoft 365 / Azure AD</h2><div style="font-size:13px">'
+        HW '<div class="card"><h2>Identity &middot; Microsoft 365 / Azure AD</h2><div style="font-size:13px">'
         foreach ($kv in @(@('namespace', [string]$m365.namespaceType), @('tenant ID', [string]$m365.tenantId), @('region', [string]$m365.tenantRegion), @('brand', [string]$m365.federationBrand), @('IdP / ADFS auth URL', [string]$m365.federationAuthUrl), @('cloud', [string]$m365.cloudInstance))) {
             if ($kv[1]) { HW ('<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-top:0.5px solid var(--border)"><span class="muted">{0}</span><span class="mono" style="text-align:right;word-break:break-all">{1}</span></div>' -f $kv[0], (HE $kv[1])) }
         }
@@ -598,8 +609,28 @@ function Build-Report {
         }
         HW '</div></div>'
     }
-    HW '<div class="grid2">'
-    HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> vulnerable JS libraries</h2>'
+    HW '<div class="card" id="sec1"><h2><span class="sn">1 &middot;</span> Tech &amp; DNS</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">ports &amp; services: run the separate nmap scan (in-VDI)</div>'
+    if ($cpes.Count) { HW ('<div class="muted" style="font-size:13px">tech: {0}</div>' -f (HE (($cpes | Select-Object -First 6) -join ', '))) }
+    if (@($dns).Count) {
+        $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
+        HW ('<div style="font-size:13px;margin-top:6px">DNS / mail: SPF <span style="color:{0};font-weight:500">{1}</span> &middot; DMARC <span style="color:{2};font-weight:500">{3}</span>{4}</div>' -f $(if ($spfMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($spfMiss) { 'missing' } else { 'ok' }), $(if ($dmarcMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($dmarcMiss) { 'missing' } else { 'ok' }), $(if (@($dsec).Count) { (' &middot; DNSSEC <span style="color:{0};font-weight:500">{1}</span> &middot; CAA <span style="color:{2};font-weight:500">{3}</span>' -f $(if ($unsigned) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($unsigned) { 'unsigned' } else { 'signed' }), $(if ($noCaa) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($noCaa) { 'none' } else { 'set' })) } else { '' }))
+        if (@($axfr).Count) { HW '<div style="font-size:13px;margin-top:6px;color:var(--dn);font-weight:600">&#9888; AXFR zone transfer ALLOWED - the full DNS zone is dumpable</div>' }
+    }
+    if (@($tech).Count) {
+        $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
+        HW '<div style="margin-top:10px"><div class="muted" style="font-size:12px;margin-bottom:4px">Technology</div><div style="display:flex;flex-wrap:wrap;gap:7px">'
+        foreach ($tn in ($techNames | Select-Object -First 18)) { HW ('<span class="pill" style="background:var(--tile);color:var(--text)">{0}</span>' -f (HE $tn)) }
+        HW '</div></div>'
+    }
+    HW '</div>'
+    HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> Known vulnerabilities</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">Two independent sources: host / service CVEs (Shodan InternetDB, tied to the IP) and vulnerable JS libraries (retire.js, from shipped front-end code). Version-confirm on the live target before reporting.</div>'
+    HW '<div style="font-size:13px;font-weight:600">Host / service CVEs <span class="muted" style="font-weight:400">&middot; Shodan InternetDB</span></div>'
+    if (@($vulns).Count) {
+        HW '<div class="cve" style="margin:3px 0 2px">'; HW ((@($vulns) | Sort-Object -Unique | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', '); HW '</div>'
+    } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none recorded for the host IP - run the in-VDI nmap / version scan to confirm services.</div>' }
+    HW '<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js</span></div>'
     if ($libs.Count) {
         HW ('<div class="bar"><div style="flex:{0};background:var(--dn)"></div><div style="flex:{1};background:var(--wn)"></div><div style="flex:{2};background:var(--faint)"></div></div>' -f $sevHi, $sevMd, $sevLo)
         HW ('<div class="muted" style="font-size:12px;margin-bottom:4px">{0} high &middot; {1} medium &middot; {2} low</div>' -f $sevHi, $sevMd, $sevLo)
@@ -608,41 +639,13 @@ function Build-Report {
             $lsev = [string]$libs[$lk].sev; if (-not $lsev) { $lsev = '?' }
             $rtop = $(if ($hfirst) { ' style="border-top:none"' } else { '' }); $hfirst = $false
             $lsrc = $(if ($libs[$lk].src) { '<div class="src">' + (HE $libs[$lk].src) + '</div>' } else { '' })
-            $lcve = $(if (@($libs[$lk].cves).Count) { '<div class="cve">' + ((@($libs[$lk].cves) | Sort-Object | ForEach-Object { '<a href="' + $nvd + (HE $_) + '">' + (HE $_) + '</a>' }) -join ', ') + '</div>' } else { '' })
+            $lcve = $(if (@($libs[$lk].cves).Count) { '<div class="cve">' + ((@($libs[$lk].cves) | Sort-Object | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', ') + '</div>' } else { '' })
             HW ('<div class="row"{0}><div style="min-width:0"><span class="mono" style="font-weight:500">{1}</span>{2}{3}</div><span class="sev" style="{4}">{5}</span></div>' -f $rtop, (HE $lk), $lcve, $lsrc, (SevS $lsev), (HE $lsev))
         }
-    } else { HW '<div class="muted">none flagged.</div>' }
+    } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none flagged.</div>' }
     HW '</div>'
-    HW '<div class="card" id="sec5"><h2><span class="sn">5 &middot;</span> secret triage</h2>'
-    HW ('<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px"><span style="font-size:26px;font-weight:600">{0}</span><span class="muted" style="font-size:13px">high-confidence</span></div>' -f $secN)
-    if ($thVer.Count) { HW ('<div class="row" style="border-top:none"><span>trufflehog verified</span><span class="sev" style="background:var(--dn-bg);color:var(--dn)">{0} live</span></div>' -f $thVer.Count) }
-    if ($glSpec.Count) { HW ('<div class="row"><span>gitleaks specific rule</span><span class="sev" style="background:var(--wn-bg);color:var(--wn)">{0}</span></div>' -f $glSpec.Count) }
-    $fpN = $thUnv.Count + $glGen.Count
-    if ($fpN) {
-        HW '<ul class="muted" style="font-size:13px">'
-        if ($thUnv.Count) { HW ('<li>{0} unverified &middot; trufflehog ({1})</li>' -f $thUnv.Count, (HE ((@($thUnv.DetectorName) | Sort-Object -Unique) -join ', '))) }
-        if ($glGen.Count) { HW ('<li>{0} generic-api-key &middot; gitleaks</li>' -f $glGen.Count) }
-        HW '<li>likely false positives - minified-JS / VIEWSTATE noise</li></ul>'
-    }
-    if (-not $secN -and -not $fpN) { HW '<div class="muted">no secrets flagged.</div>' }
-    HW '</div></div>'
-    HW '<div class="card" id="sec1"><h2><span class="sn">1 &middot;</span> tech &amp; DNS</h2>'
-    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">ports &amp; services: run the separate nmap scan (in-VDI)</div>'
-    if ($cpes.Count) { HW ('<div class="muted" style="font-size:13px">tech: {0}</div>' -f (HE (($cpes | Select-Object -First 6) -join ', '))) }
-    if (@($dns).Count) {
-        $spfMiss = -not ($dns | Where-Object { $_ -match 'v=spf1' }); $dmarcMiss = -not ($dns | Where-Object { $_ -match 'DMARC1' })
-        HW ('<div style="font-size:13px;margin-top:6px">DNS / mail: SPF <span style="color:{0};font-weight:500">{1}</span> &middot; DMARC <span style="color:{2};font-weight:500">{3}</span>{4}</div>' -f $(if ($spfMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($spfMiss) { 'missing' } else { 'ok' }), $(if ($dmarcMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($dmarcMiss) { 'missing' } else { 'ok' }), $(if (@($dsec).Count) { (' &middot; DNSSEC <span style="color:{0};font-weight:500">{1}</span> &middot; CAA <span style="color:{2};font-weight:500">{3}</span>' -f $(if ($unsigned) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($unsigned) { 'unsigned' } else { 'signed' }), $(if ($noCaa) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($noCaa) { 'none' } else { 'set' })) } else { '' }))
-        if (@($axfr).Count) { HW '<div style="font-size:13px;margin-top:6px;color:var(--dn);font-weight:600">&#9888; AXFR zone transfer ALLOWED - the full DNS zone is dumpable</div>' }
-    }
-    HW '</div>'
-    if (@($tech).Count) {
-        HW '<div class="card"><h2>technology</h2><div style="display:flex;flex-wrap:wrap;gap:7px">'
-        $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
-        foreach ($tn in ($techNames | Select-Object -First 18)) { HW ('<span class="pill" style="background:var(--tile);color:var(--text)">{0}</span>' -f (HE $tn)) }
-        HW '</div></div>'
-    }
     if (@($smSrc).Count -or @($smRef).Count) {
-        HW '<div class="card"><h2>source maps</h2>'
+        HW '<div class="card"><h2>Source maps</h2>'
         if (@($smSrc).Count) {
             HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">original source path(s) recovered - internal app structure exposed</span></div>' -f @($smSrc).Count)
             HW '<div class="src" style="line-height:1.9">'; foreach ($s in (@($smSrc) | Select-Object -First 8)) { HW ((HE $s) + '<br>') }; HW '</div>'
@@ -652,7 +655,7 @@ function Build-Report {
         HW '</div>'
     }
     if (@($cands).Count) {
-        HW '<div class="card" id="sec3"><h2><span class="sn">3 &middot;</span> origin candidates - WAF bypass</h2>'
+        HW '<div class="card" id="sec3"><h2><span class="sn">3 &middot;</span> Origin candidates - WAF bypass</h2>'
         $cShow = $(if (@($candsEnr).Count) { $candsEnr } else { $cands })
         $cfirst = $true
         foreach ($c in $cShow) {
@@ -665,22 +668,7 @@ function Build-Report {
         HW '<div class="muted" style="font-size:12px;margin-top:6px">PASSIVE candidates - live-verify; an old / passive IP is not necessarily the current origin.</div>'
         HW '</div>'
     }
-    if (@($apiEp).Count -or @($apiRefs).Count -or @($jsApi).Count) {
-        HW '<div class="card"><h2>API surface</h2>'
-        if (@($apiEp).Count) {
-            HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">endpoint(s) recovered from an archived OpenAPI/Swagger spec - the full contract</span></div>' -f @($apiEp).Count)
-            HW '<div class="src" style="line-height:1.9">'; foreach ($e in (@($apiEp) | Select-Object -First 12)) { HW ((HE $e) + '<br>') }; HW '</div>'
-            if (@($apiEp).Count -gt 12) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\api_spec_endpoints.txt' ('all ' + @($apiEp).Count + ' endpoints'))) }
-        }
-        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) -> {1} - fetch live</div>' -f @($apiRefs).Count, (FLink '06_js\api_spec_refs.txt' 'api_spec_refs.txt')) }
-        if (@($jsApi).Count) {
-            HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">endpoint(s) from archived JS (jsluice) - HTTP method + params</span></div>' -f @($jsApi).Count)
-            HW '<div class="src mono" style="line-height:1.9">'; foreach ($e in (ApiRank $jsApi | Select-Object -First 10)) { HW ((HE $e) + '<br>') }; HW '</div>'
-            if (@($jsApi).Count -gt 10) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\js_api.txt' ('all ' + @($jsApi).Count + ' endpoints'))) }
-        }
-        HW '</div>'
-    }
-    HW '<div class="card" id="sec4"><h2><span class="sn">4 &middot;</span> attack surface</h2>'
+    HW '<div class="card" id="sec4"><h2><span class="sn">4 &middot;</span> Attack surface</h2>'
     HW '<div class="muted" style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px">'
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> archived URLs</span>' -f @($allUrls).Count)
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> deduped</span>' -f @($dedupUrls).Count)
@@ -688,24 +676,75 @@ function Build-Report {
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> params</span>' -f $allParams.Count)
     HW ('<span><span style="color:var(--text);font-weight:500">{0}</span> URIs</span>' -f @($uris).Count)
     HW '</div>'
-    if ($hot.Count) { HW '<div class="src" style="margin-top:8px;line-height:1.9">'; foreach ($u in ($hot | Select-Object -First 8)) { HW ((HE $u) + '<br>') }; HW '</div>'; if ($hot.Count -gt 8) { HW ('<div class="flink muted" style="margin-top:2px">+{0} more high-signal</div>' -f ($hot.Count - 8)) } }
+    if ($hot.Count) { HW '<div class="src" style="margin-top:8px;line-height:1.9">'; foreach ($u in ($hot | Select-Object -First 8)) { HW ((UL $u) + '<br>') }; HW '</div>'; if ($hot.Count -gt 8) { HW ('<div class="flink muted" style="margin-top:2px">+{0} more high-signal</div>' -f ($hot.Count - 8)) } }
     HW ('<div class="flink muted" style="margin-top:8px">open: {0} &middot; {1} &middot; {2} &middot; {3} &middot; {4}</div>' -f (FLink '05_history\all_urls.txt' 'all_urls'), (FLink '05_history\urls_deduped.txt' 'deduped'), (FLink '05_history\uris.txt' 'uris'), (FLink '05_history\params.txt' 'params'), (FLink '06_js\endpoints.txt' 'endpoints'))
     HW '</div>'
+    if (@($apiEp).Count -or @($apiRefs).Count -or @($jsApi).Count) {
+        HW '<div class="card"><h2>API surface</h2>'
+        if (@($apiEp).Count) {
+            HW ('<div style="font-size:13px;margin-bottom:6px"><span style="font-weight:500;color:var(--dn)">{0}</span> <span class="muted">endpoint(s) recovered from an archived OpenAPI/Swagger spec - the full contract</span></div>' -f @($apiEp).Count)
+            HW '<div class="src" style="line-height:1.9">'; foreach ($e in (@($apiEp) | Select-Object -First 12)) { HW ((UL $e) + '<br>') }; HW '</div>'
+            if (@($apiEp).Count -gt 12) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\api_spec_endpoints.txt' ('all ' + @($apiEp).Count + ' endpoints'))) }
+        }
+        if (@($apiRefs).Count) { HW ('<div class="muted" style="font-size:12px;margin-top:6px">{0} spec-URL lead(s) -> {1} - fetch live</div>' -f @($apiRefs).Count, (FLink '06_js\api_spec_refs.txt' 'api_spec_refs.txt')) }
+        if (@($jsApi).Count) {
+            HW ('<div style="font-size:13px;margin-top:8px"><span style="font-weight:500;color:var(--info)">{0}</span> <span class="muted">endpoint(s) from archived JS (jsluice) - HTTP method + params</span></div>' -f @($jsApi).Count)
+            HW '<div class="src mono" style="line-height:1.9">'; foreach ($e in (ApiRank $jsApi | Select-Object -First 10)) { HW ((UL $e) + '<br>') }; HW '</div>'
+            if (@($jsApi).Count -gt 10) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\js_api.txt' ('all ' + @($jsApi).Count + ' endpoints'))) }
+        }
+        HW '</div>'
+    }
     if (@($cloud).Count) {
-        HW ('<div class="card"><h2>cloud storage - {0} URL(s)</h2>' -f @($cloud).Count)
-        HW '<div class="src" style="line-height:1.9">'; foreach ($u in (@($cloud) | Select-Object -First 6)) { HW ((HE $u) + '<br>') }; HW '</div>'
+        HW ('<div class="card"><h2>Cloud storage - {0} URL(s)</h2>' -f @($cloud).Count)
+        HW '<div class="src" style="line-height:1.9">'; foreach ($u in (@($cloud) | Select-Object -First 6)) { HW ((UL $u) + '<br>') }; HW '</div>'
         if (@($cloud).Count -gt 6) { HW ('<div class="flink" style="margin-top:2px">{0}</div>' -f (FLink '06_js\cloud_assets.txt' ('all ' + @($cloud).Count + ' URLs'))) }
         HW '<div class="muted" style="font-size:12px;margin-top:4px">check for public / listable buckets</div></div>'
     }
+    HW '<div class="card" id="sec5"><h2><span class="sn">5 &middot;</span> Secret triage</h2>'
+    HW ('<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px"><span style="font-size:26px;font-weight:600{1}">{0}</span><span class="muted" style="font-size:13px">high-confidence &middot; trufflehog verified + gitleaks specific-rule</span></div>' -f $secN, $(if ($secN) { ';color:var(--dn)' } else { '' }))
+    $shownSec = $false
+    if ($glSpec.Count) {
+        $shownSec = $true; $gfirst = $true
+        foreach ($g in ($glSpec | Select-Object -First 12)) {
+            $rtop = $(if ($gfirst) { ' style="border-top:none"' } else { '' }); $gfirst = $false
+            $gfile = $(if ($g.File) { Split-Path ([string]$g.File) -Leaf } else { '' }); $gln = $(if ($g.StartLine) { ':' + $g.StartLine } else { '' })
+            HW ('<div class="row"{0}><div style="min-width:0"><span class="mono" style="font-weight:500">{1}</span> <span class="src">{2}{3}</span><div class="cve">{4}</div></div><span class="sev" style="background:var(--dn-bg);color:var(--dn)">gitleaks</span></div>' -f $rtop, (HE ([string]$g.RuleID)), (HE $gfile), (HE $gln), (HE (Mask $g.Secret)))
+        }
+    }
+    if ($thVer.Count) {
+        $shownSec = $true; $tfirst = -not $glSpec.Count
+        foreach ($t in ($thVer | Select-Object -First 12)) {
+            $rtop = $(if ($tfirst) { ' style="border-top:none"' } else { '' }); $tfirst = $false
+            $tfile = ''; try { $tfile = Split-Path ([string]$t.SourceMetadata.Data.Filesystem.file) -Leaf } catch {}
+            $tred = $(if ($t.Redacted) { [string]$t.Redacted } else { Mask $t.Raw })
+            HW ('<div class="row"{0}><div style="min-width:0"><span class="mono" style="font-weight:500">{1}</span> <span class="src">{2}</span><div class="cve">{3}</div></div><span class="sev" style="background:var(--dn-bg);color:var(--dn)">verified</span></div>' -f $rtop, (HE ([string]$t.DetectorName)), (HE $tfile), (HE $tred))
+        }
+    }
+    $fpN = $thUnv.Count + $glGen.Count
+    if ($fpN) {
+        HW '<ul class="muted" style="font-size:13px;margin-top:8px">'
+        if ($thUnv.Count) { HW ('<li>{0} unverified &middot; trufflehog ({1})</li>' -f $thUnv.Count, (HE ((@($thUnv.DetectorName) | Sort-Object -Unique) -join ', '))) }
+        if ($glGen.Count) { HW ('<li>{0} generic-api-key &middot; gitleaks</li>' -f $glGen.Count) }
+        HW '<li>likely false positives - minified-JS / VIEWSTATE noise</li></ul>'
+    }
+    if (-not $shownSec -and -not $fpN) { HW '<div class="muted">no secrets flagged.</div>' }
+    $secOpen = New-Object System.Collections.Generic.List[string]
+    foreach ($sf in @(@('06_js\_raw\gitleaks.json', 'gitleaks.json'), @('06_js\_raw\trufflehog.json', 'trufflehog.json'), @('06_js\_raw\jsluice_secrets.json', 'jsluice_secrets.json'), @('08_live\_raw\live_js_gitleaks.json', 'live_js_gitleaks.json'))) { if (Test-Path (P $sf[0])) { $secOpen.Add((FLink $sf[0] $sf[1])) } }
+    if ($secOpen.Count) { HW ('<div class="flink muted" style="margin-top:8px">open full values: {0}</div>' -f ($secOpen -join ' &middot; ')) }
+    HW '</div>'
     HW '<div class="card" id="sec6"><h2><span class="sn">6 &middot;</span> OSINT / exposure</h2><div style="font-size:13px;line-height:1.9">'
-    HW ('<div class="muted">org emails: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($emails).Count)
-    if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($breach).Count) }
-    if ($tranco.ranks) { HW ('<div class="muted">Tranco rank: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f $tranco.ranks[0].rank) }
-    if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <span style="color:var(--text);font-weight:500">{0}</span></div>' -f @($ghHits).Count) }
-    if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <span style="font-weight:500;color:{0}">{1}</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--text)' }), $opc) }
-    if ($abuse) { HW ('<div class="muted">AbuseIPDB: <span style="font-weight:500;color:{0}">{1}/100</span> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--text)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType))) }
+    HW ('<div class="muted">org emails: <span style="color:var(--text);font-weight:500">{0}</span>{1}</div>' -f @($emails).Count, $(if (Test-Path (P '07_osint\emails.txt')) { ' &middot; ' + (FLink '07_osint\emails.txt' 'list') } else { '' }))
+    if (@($breach).Count) { HW ('<div class="muted">breach / infostealer hits: <span style="color:var(--dn);font-weight:500">{0}</span>{1}</div>' -f @($breach).Count, $(if (Test-Path (P '07_osint\breach_hits.txt')) { ' &middot; ' + (FLink '07_osint\breach_hits.txt' 'list') } else { '' })) }
+    if ($tranco.ranks) {
+        $trRank = 0; try { $trRank = [int64]$tranco.ranks[0].rank } catch {}
+        $trLabel = if ($trRank -le 0) { 'unranked' } elseif ($trRank -le 100000) { 'a high-traffic site' } elseif ($trRank -le 1000000) { 'a mid-traffic site' } else { 'a low-traffic / niche site' }
+        HW ('<div class="muted">Tranco rank: <a href="https://tranco-list.eu/query?domain={0}" target="_blank" rel="noopener" style="font-weight:500">{1}</a> <span style="color:var(--faint)">&middot; the domain''s position on the research-grade Tranco popularity list (Alexa-style; #1 = most-visited). Here that means {2}.</span></div>' -f (HE $host_), (HE ([string]$tranco.ranks[0].rank)), $trLabel)
+    }
+    if (@($ghHits).Count) { HW ('<div class="muted">GitHub code refs: <a href="https://github.com/search?q={1}&amp;type=code" target="_blank" rel="noopener" style="font-weight:500">{0}</a> <span style="color:var(--faint)">&middot; public source files mentioning the host - review for leaked config / paths</span>{2}</div>' -f @($ghHits).Count, (HE $host_), $(if (Test-Path (P '07_osint\github_hits.txt')) { ' &middot; ' + (FLink '07_osint\github_hits.txt' 'list') } else { '' })) }
+    if ($otx) { $opc = [int]$otx.pulse_info.count; HW ('<div class="muted">OTX threat pulses: <a href="https://otx.alienvault.com/indicator/hostname/{2}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}</a> <span style="color:var(--faint)">&middot; AlienVault threat-intel reports referencing the host</span></div>' -f $(if ($opc -gt 0) { 'var(--dn)' } else { 'var(--info)' }), $opc, (HE $host_)) }
+    if ($abuse) { HW ('<div class="muted">AbuseIPDB: <a href="https://www.abuseipdb.com/check/{4}" target="_blank" rel="noopener" style="font-weight:500;color:{0}">{1}/100</a> <span class="muted">({2} reports &middot; {3})</span></div>' -f $(if ([int]$abuse.abuseConfidenceScore -ge 25) { 'var(--dn)' } else { 'var(--info)' }), $abuse.abuseConfidenceScore, $abuse.totalReports, (HE ([string]$abuse.usageType)), (HE $ip)) }
     HW '</div></div>'
-    HW '<div class="card" id="secfiles"><h2>package files &middot; out-of-scope</h2>'
+    HW '<div class="card" id="secfiles"><h2>Package files &middot; out-of-scope</h2>'
     HW '<div class="muted" style="font-size:12px;margin-bottom:6px">raw artifacts - click to open (works when this report is viewed from inside its package folder)</div>'
     HW '<div class="files mono">'
     foreach ($d in @('01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech')) { if (Test-Path (P $d)) { HW (FLink ($d + '\') ($d + '/')) } }
@@ -713,7 +752,7 @@ function Build-Report {
     foreach ($fdoc in @('Index.md', 'Verify.md', 'OOS_observed.txt', 'manifest.sha256', 'recon.log', '05_history\all_urls.txt', '05_history\uris.txt', '06_js\endpoints.txt', '06_js\wordlist.txt')) { if (Test-Path (P $fdoc)) { HW (FLink $fdoc) } }
     HW '</div></div>'
     HW ('<div style="font-size:12px;color:var(--faint);margin-top:4px">single host &middot; {0} out-of-scope asset(s) observed - do not test</div>' -f $oosClean.Count)
-    HW '<script>(function(){var r=document.documentElement,b=document.getElementById("themeBtn");if(!b)return;function cur(){return r.getAttribute("data-theme")||(window.matchMedia&&window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");}try{var s=localStorage.getItem("al-theme");if(s)r.setAttribute("data-theme",s);}catch(e){}function upd(){b.textContent=cur()==="dark"?"light mode":"dark mode";}upd();b.addEventListener("click",function(){var n=cur()==="dark"?"light":"dark";r.setAttribute("data-theme",n);try{localStorage.setItem("al-theme",n);}catch(e){}upd();});})();</script>'
+    HW '<script>(function(){var r=document.documentElement,b=document.getElementById("themeBtn");if(!b)return;var SUN=''<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'',MOON=''<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>'';function cur(){return r.getAttribute("data-theme")||(window.matchMedia&&window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");}try{var s=localStorage.getItem("al-theme");if(s)r.setAttribute("data-theme",s);}catch(e){}function upd(){var d=cur()==="dark";b.innerHTML=d?SUN:MOON;b.title=d?"switch to light mode":"switch to dark mode";}upd();b.addEventListener("click",function(){var n=cur()==="dark"?"light":"dark";r.setAttribute("data-theme",n);try{localStorage.setItem("al-theme",n);}catch(e){}upd();});})();</script>'
     HW '</div></body></html>'
     [System.IO.File]::WriteAllText((P 'Report.html'), ($h -join "`n"), $u8)
     Write-Host "Report written: $(P 'Report.md')  +  Report.html" -ForegroundColor Green
