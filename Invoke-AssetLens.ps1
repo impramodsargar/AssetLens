@@ -53,6 +53,25 @@ $env:PYTHONIOENCODING = 'utf-8'   # keep Python tools (uro/waymore) from crashin
 # summarised once at the end rather than only as scattered [WARN] lines. 404/403/401 = the source responded, not a failure.
 $script:HttpFails = 0
 $script:FailedSources = New-Object System.Collections.Generic.List[string]
+# auto-resume: an interrupted scan (dropped net / crash) is detected on the next run of the SAME host and continued
+# from the first unfinished phase - no flag. A checkpoint (.state.json) + OOS snapshot (.oos.txt) live in the package.
+$script:ResumeDone = @(); $script:IsResume = $false
+function Read-ReconState { param($PkgDir) $sf = Join-Path $PkgDir '.state.json'; if (Test-Path $sf) { try { return (Get-Content $sf -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {} }; return $null }
+function Write-ReconState {
+    param($PkgDir, [string[]]$Done, [string]$Status)
+    $o = [pscustomobject]@{ host = $Target; probe = [bool]$Probe; strict = [bool]$Strict; keyless = [bool]$Keyless; done = @($Done); status = $Status; updated = (Get-Date -Format 'o') }
+    try { [System.IO.File]::WriteAllText((Join-Path $PkgDir '.state.json'), ($o | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+}
+function Find-ReconResume {
+    param([string]$HostName, [string]$OutDir, [int]$MaxAgeHours = 24)
+    if (-not (Test-Path $OutDir)) { return $null }
+    $latest = @(Get-ChildItem $OutDir -Directory -Filter ($HostName + '_*') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+    if (-not $latest.Count) { return $null }
+    $d = $latest[0]; $st = Read-ReconState $d.FullName
+    if (-not $st -or $st.status -eq 'complete') { return $null }                        # finished or pre-resume dir -> fresh
+    if (((Get-Date) - $d.LastWriteTime).TotalHours -gt $MaxAgeHours) { return $null }   # stale partial -> fresh
+    return [pscustomobject]@{ Path = $d.FullName; Done = @($st.done) }
+}
 
 # resolve the script's own folder. $PSScriptRoot is EMPTY when launched as `powershell -File .\Invoke-AssetLens.ps1`
 # (relative path) on Windows PowerShell, so fall back through other sources, then to the current directory.
@@ -1015,9 +1034,13 @@ if ($Target -notmatch '^[a-z0-9.-]+\.[a-z]{2,}$') { throw "Target does not look 
 # ---------------------------------------------------------------- package dirs (fresh run creates a new dir; a -Phase rerun uses the existing one)
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
 if (-not $RerunPkg) {
-    $pkg = Join-Path $OutRoot ('{0}_{1}' -f $Target, (Get-Date -Format 'yyyyMMdd-HHmmss'))   # per-run dir - never clobber a same-day run
+    # auto-resume: continue the latest RECENT, INCOMPLETE scan for this host instead of starting over. A completed,
+    # stateless, or stale (>24h) latest package -> fresh run. To force a fresh run, delete the partial package folder.
+    $rz = Find-ReconResume -HostName $Target -OutDir $OutRoot
+    if ($rz) { $pkg = $rz.Path; $script:ResumeDone = @($rz.Done); $script:IsResume = $true }
+    else     { $pkg = Join-Path $OutRoot ('{0}_{1}' -f $Target, (Get-Date -Format 'yyyyMMdd-HHmmss')); $script:ResumeDone = @(); $script:IsResume = $false }
     foreach ($d in '', '01_scope', '02_certs', '03_scan', '04_origin', '05_history', '06_js', '07_osint', '08_tech') {
-        New-Item -ItemType Directory -Force -Path (Join-Path $pkg $d) | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $pkg $d) | Out-Null   # idempotent: ensures dirs on fresh AND resume
     }
 }
 $logPath = Join-Path $pkg 'recon.log'
@@ -1390,6 +1413,9 @@ function Get-M365Tenant {
 # ---------------------------------------------------------------- scope guard (single host)
 $InScope = @($Target)
 $OOS     = New-Object System.Collections.Generic.List[string]
+# auto-resume: restore the OOS accumulator snapshotted after the last completed phase, so phases skipped on resume
+# don't drop their off-host findings from the final OOS_observed.txt.
+if ($script:IsResume) { $oosSnap = Join-Path $pkg '.oos.txt'; if (Test-Path $oosSnap) { foreach ($l in (Get-Content $oosSnap -ErrorAction SilentlyContinue)) { $s = [string]$l; if ($s -and -not $OOS.Contains($s)) { $OOS.Add($s) } } } }
 function Test-InScope { param($h) return (([string]$h).ToLower() -in $InScope) }
 function Add-OOS {
     param($Name, $Source)
@@ -2071,7 +2097,7 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 
 function Write-Worklist {
     param($IP)
-    $origins = if ($script:OriginCandidates -and $script:OriginCandidates.Count) { ($script:OriginCandidates -join ', ') } else { '(none found)' }
+    $origins = if ($script:OriginCandidates -and $script:OriginCandidates.Count) { ($script:OriginCandidates -join ', ') } elseif (Test-Path (Join-Path $pkg '04_origin\candidates.txt')) { $oc = @(Get-Content (Join-Path $pkg '04_origin\candidates.txt') -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }); if ($oc.Count) { ($oc -join ', ') } else { '(none found)' } } else { '(none found)' }
     Save-Text (Join-Path $pkg 'Verify.md') @"
 # Verify - $Target
 
@@ -2279,9 +2305,19 @@ $want = if ($Phase) { @(($Phase -join ',').ToUpper() -split '[,\s]+' | Where-Obj
 $bad  = @($want | Where-Object { @($phases.Keys) -notcontains $_ })
 if ($bad.Count) { Write-Log ("unknown -Phase: {0}  (valid: {1})" -f ($bad -join ','), (@($phases.Keys) -join ',')) 'WARN' }
 if ($RerunPkg) { Write-Log ("re-run: phase(s) [{0}] on existing package {1}" -f ($want -join ','), (Split-Path $pkg -Leaf)) 'INFO' }
+if ($script:IsResume) { Write-Log ("auto-resume: continuing interrupted scan {0} - {1} phase(s) already done [{2}]" -f (Split-Path $pkg -Leaf), @($script:ResumeDone).Count, (@($script:ResumeDone) -join ',')) 'INFO' }
 foreach ($k in $phases.Keys) {
     if ($want -notcontains $k) { continue }
-    try { & $phases[$k] } catch { Write-Log "phase $k failed: $($_.Exception.Message)" 'WARN' }
+    if ($script:IsResume -and $script:ResumeDone -contains $k) { Write-Log "$k already complete (resume) - skipping" 'SKIP'; continue }
+    try {
+        & $phases[$k]
+        # checkpoint after each successful phase: mark it done + snapshot OOS so an interruption resumes from here
+        if (-not $RerunPkg) {
+            if ($script:ResumeDone -notcontains $k) { $script:ResumeDone += $k }
+            Write-ReconState $pkg $script:ResumeDone 'running'
+            try { [System.IO.File]::WriteAllLines((Join-Path $pkg '.oos.txt'), [string[]]@($OOS), $utf8) } catch {}
+        }
+    } catch { Write-Log "phase $k failed: $($_.Exception.Message)" 'WARN' }
 }
 # resilience summary: make a degraded run visible at a glance (scattered [WARN]s are easy to miss)
 if ($script:HttpFails -gt 0) { Write-Log ("{0} external request(s) failed to respond across {1} source(s): {2} - report is complete from the sources that did respond" -f $script:HttpFails, @($script:FailedSources).Count, (@($script:FailedSources) -join ', ')) 'WARN' }
@@ -2307,6 +2343,7 @@ if ($UatBase) { try { Invoke-MapUat -Package $pkg -UatBase $UatBase | Out-Null; 
 Write-Host ''
 Write-Log "DONE  package: $pkg" 'OK'
 Write-Log ('OOS assets noted: {0}  (see OOS_observed.txt)' -f $OOS.Count) $(if ($OOS.Count) { 'OOS' } else { 'INFO' })
+if (-not $RerunPkg) { Write-ReconState $pkg $script:ResumeDone 'complete' }   # mark finished so the next run of this host starts fresh
 
 # manifest LAST (so it covers the final recon.log), then zip + hash for transfer
 $manifest = Get-ChildItem $pkg -Recurse -File | Where-Object { $_.Name -ne 'manifest.sha256' } |
