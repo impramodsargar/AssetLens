@@ -28,7 +28,7 @@
 
 ---
 
-**AssetLens** is a PowerShell-native passive-recon collector for a **single internet-facing host**. It maps the target's external attack surface entirely from third-party sources — **zero packets to the target** — and writes a self-contained, hash-sealed evidence package (plain text / JSON) plus a ranked worklist. The one exception is the opt-in **`-Probe`** phase (P8), which liveness-checks discovered URLs and needs target authorization.
+**AssetLens** is a PowerShell-native passive-recon collector for a **single internet-facing host**. It maps the target's external attack surface entirely from third-party sources — **zero packets to the target** — and writes a self-contained, hash-sealed evidence package (plain text / JSON) plus a ranked worklist. The one exception is the opt-in **`-Probe`** phase (P8), which liveness-checks discovered URLs and needs target authorization. An interrupted run (dropped connection, crash) is **auto-resumed** on the next invocation — no flag.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ flowchart TB
         direction TB
         P1["P1 · Scope — RDAP · DNS · IP · geo · CDN/WAF · M365 tenant · DNS-sec (CAA/DNSSEC/DKIM/AXFR)"]
         P2["P2 · Certs — crt.sh SANs · subfinder (-Enum)"]
-        P3["P3 · Intel — InternetDB CVEs/CPEs · AbuseIPDB reputation"]
+        P3["P3 · Intel — InternetDB CVEs/CPEs · AbuseIPDB reputation · every resolved IP"]
         P4["P4 · Origin — passive-DNS · CriminalIP/Quake cert→IP pivot (WAF bypass)"]
         P5["P5 · History — waymore + gau archives · uro dedup"]
         P6["P6 · JS mining — endpoints · params · secrets · cloud · WebSockets · source-map rebuild ·<br/>DOM-XSS/postMessage/GraphQL · gf bug-class buckets · tech fingerprint"]
@@ -102,6 +102,8 @@ Copy-Item .\config\keys.example.ps1 .\config\keys.ps1   # optional — free keys
 
 The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, M365) runs with zero keys. Output lands in `output\<host>_<date>\`, auto-zipped + SHA-256'd. `config\keys.ps1` is git-ignored — never commit real keys.
 
+**Interrupted?** Just re-run the same command. AssetLens checkpoints after every phase, so a scan cut short by a dropped connection or crash is auto-detected on the next run of that host and continues from where it stopped — no flag, no lost work. (A finished, or >24h-old, package starts fresh instead; delete the partial folder to force fresh.)
+
 ## Commands & flags
 
 | Command | What it does |
@@ -130,21 +132,22 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 |---|---|---|
 | **P1 Scope** | RDAP · DNS (MX/SPF/DMARC/NS/CNAME) · IP · geo · CDN/WAF · netblock owner · **M365 / Azure AD tenant** · **DNS security** (CAA · DNSSEC · DKIM selectors · **AXFR** zone-transfer attempt per NS) | keyless |
 | **P2 Certs** | crt.sh SANs (in-scope flagged) · `subfinder` (`-Enum`) | keyless |
-| **P3 Intel** | Shodan-InternetDB **CVEs/CPEs** · AbuseIPDB reputation *(ports left to the in-VDI nmap scan)* | keyless |
+| **P3 Intel** | Shodan-InternetDB **CVEs/CPEs** · AbuseIPDB reputation — **for every resolved A record** (CVEs/CPEs unioned; worst-scoring IP headlined, full per-IP breakdown in `abuseipdb_all.txt`) *(ports left to the in-VDI nmap scan)* | keyless |
 | **P4 Origin** | passive-DNS (VirusTotal · SecurityTrails) · **CriminalIP / Quake cert→IP pivot** (WAF bypass) · Netlas · **confidence-scored** (HIGH/MED/LOW from source-count + cert-pivot + services; CDN/shared edge → LOW) | keyed |
 | **P5 History** | `waymore` + `gau` archives (Wayback · CommonCrawl · OTX · URLScan) · `uro` dedup | keyless |
 | **P6 JS mining** | endpoints · params · wordlist · cloud assets · **WebSockets** · secrets (`trufflehog`/`gitleaks`/`jsluice` + custom patterns) · `retire.js` vuln-libs · Wappalyzer fingerprint · **source-map reconstruction** · jsluice AST **API map + DOM-XSS/postMessage/GraphQL deep pass** · **gf-style bug-class buckets** (xss/sqli/ssrf/lfi/redirect/rce/ssti/idor) | keyless core |
 | **P7 OSINT** | AlienVault OTX · LeakIX · GitHub code + commit-emails · LeakCheck breach-check · **public Postman leak** (keyless; searches Postman's public collections for the target domain, surfaces only in-scope requests + leaked auth/keys) · SpiderFoot | mixed |
 | **P8 Live** *(`-Probe`, active)* | `httpx` liveness · robots / sitemap / `.well-known` · live-JS re-mine · `.js.map` reconstruct → `08_live\` | active |
 
-Missing a tool or key? That step logs `SKIP` and the run continues — coverage scales with what you have installed.
+Missing a tool or key? That step logs `SKIP` and the run continues — coverage scales with what you have installed. If external sources time out or rate-limit, the run still finishes and a one-line summary at the end reports how many failed, so you know when a report ran degraded.
 
 ## Output
 
 ```
 output/<host>_<date>/
-  Report.md · Report.html   readable brief + dashboard: historical-vs-live coverage, [LIVE] endpoint provenance, prioritised (READ FIRST)
+  Report.md · Report.html   readable brief + dashboard: historical-vs-live coverage, per-endpoint multi-source provenance, prioritised worklist (READ FIRST)
   Comparer_feed.txt         deduped in-scope URLs → your coverage tool (Burp-vs-RDL)
+  endpoint_provenance.txt   every in-scope path + which channels corroborate it (LIVE/OPENAPI/LIVE_JS/ARCHIVED_JS/HISTORY)
   Verify.md                 ranked worklist of next checks
   OOS_observed.txt          off-host assets, flagged DO NOT TEST
   manifest.sha256           integrity / chain-of-custody   (+ auto .zip + .zip.sha256)
@@ -152,7 +155,7 @@ output/<host>_<date>/
   08_live/                  only with -Probe: live URLs · well-known · live JS + API map
 ```
 
-Everything is plain text / JSON — usable with nothing but a text editor. **`08_live\live_urls.txt`** is every live URL the `-Probe` pass confirmed — the list to load into your external Burp/RDL coverage-compare tool; **`Comparer_feed.txt`** is the broader discovered-URL union (historical + JS + live) if you'd rather diff discovered-vs-tested. **`06_js\gf\`** buckets in-scope param-URLs by likely bug class (`xss/sqli/ssrf/lfi/redirect/rce/ssti/idor`) so you test the parameter, not just the path.
+Everything is plain text / JSON — usable with nothing but a text editor. **`08_live\live_urls.txt`** is every live URL the `-Probe` pass confirmed — the list to load into your external Burp/RDL coverage-compare tool; **`Comparer_feed.txt`** is the broader discovered-URL union (historical + JS + live) if you'd rather diff discovered-vs-tested. **`endpoint_provenance.txt`** lists each in-scope path with the discovery channels that found it — the more channels corroborate a path (`LIVE + OPENAPI + ARCHIVED_JS + …`), the more likely it is real; `LIVE` = confirmed reachable now. **`06_js\gf\`** buckets in-scope param-URLs by likely bug class (`xss/sqli/ssrf/lfi/redirect/rce/ssti/idor`) so you test the parameter, not just the path.
 
 ## API keys
 
@@ -172,7 +175,7 @@ The target is **one host**. Everything else the tools surface — SANs, subdomai
 - **Keys** live in `config\keys.ps1` (git-ignored). Ship only `keys.example.ps1`; rotate any key that ever lands in a log.
 - **PowerShell, not Git Bash** — avoids MSYS path-mangling of slash args; HTTP via `Invoke-RestMethod`.
 - **Tech fingerprint** — a slimmed, MIT-licensed Wappalyzer ruleset (`config\wappalyzer.json`) matched **passively** against archived bodies; header/JS-only techs (Shopify, Next.js) are invisible this way by design.
-- **Extending** — each phase is a `PhaseN-*` function; write into the matching `0N_` folder and call `Add-OOS` for anything off-host.
+- **Extending** — each phase is a `PhaseN-*` function; write into the matching `0N_` folder and call `Add-OOS` for anything off-host. Any **active** feature must build its request list through `Get-ActiveTargets` — the single chokepoint that keeps active traffic on the authorised host (target + www/non-www) only.
 - **"running scripts is disabled" / "…is not digitally signed"** — PowerShell's ExecutionPolicy plus the downloaded-file (**Mark-of-the-Web**) block on a script pulled from a GitHub zip. Fix it once:
   ```powershell
   Get-ChildItem -Recurse .\ | Unblock-File          # clear the "downloaded from internet" flag
