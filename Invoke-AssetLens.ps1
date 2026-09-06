@@ -1000,6 +1000,23 @@ function Write-ComparerFeed {
 # (Burp-diff mode removed - the external Burp/RDL coverage tool owns that comparison.
 #  AssetLens just exports the URL lists it consumes: 08_live\live_urls.txt + Comparer_feed.txt.)
 
+# ---------------------------------------------------------------- startup banner (Small-slant wordmark, two-tone)
+$Version = '2.0'
+function Show-Banner {
+    # pure-ASCII art in SINGLE quotes (literal) - keeps it PS5.1-safe (no non-ASCII to mojibake on the ANSI .ps1 read).
+    # "Asset" half printed white, "Lens" half green (matches the logo #e6edf3 / #2ea44f); version dim.
+    $asset = @('   ___               __ ', '  / _ | ___ ___ ___ / /_', ' / __ |(_-<(_-</ -_) __/', '/_/ |_/___/___/\__/\__/ ')
+    $lens  = @('   __              ',        '  / /  ___ ___  ___',       ' / /__/ -_) _ \(_-<',        '/____/\__/_//_/___/')
+    Write-Host ''
+    for ($i = 0; $i -lt $asset.Count; $i++) {
+        Write-Host $asset[$i] -ForegroundColor White -NoNewline
+        if ($i -eq $asset.Count - 1) { Write-Host $lens[$i] -ForegroundColor Green -NoNewline; Write-Host "  v$Version" -ForegroundColor DarkGray }
+        else { Write-Host $lens[$i] -ForegroundColor Green }
+    }
+    Write-Host ''
+}
+Show-Banner
+
 # ================================================================ mode dispatch (non-recon modes return)
 if ($Setup)  { Invoke-Setup -SkipBase:$SkipBase; return }
 if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; Write-ComparerFeed -Package $Package; return }
