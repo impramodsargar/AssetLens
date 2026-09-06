@@ -211,7 +211,7 @@ function Build-Report {
     function P     { param($rel) Join-Path $Package $rel }
     # resolve for READING: prefer the _raw\ copy (raw dumps moved there), fall back to the phase root (txt outputs + old packages).
     function Pr    { param($rel) $p = P $rel; $r = Join-Path (Join-Path (Split-Path $p -Parent) '_raw') (Split-Path $p -Leaf); if (Test-Path $r) { $r } else { $p } }
-    function GJson { param($rel) $p = Pr $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
+    function GJson { param($rel) $p = Pr $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
     function GLines{ param($rel) $p = Pr $rel; if (Test-Path $p) { return @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
     function Has   { param($rel) Test-Path (Pr $rel) }
     # preview ordering for the jsluice API maps: float the highest-signal lines up - non-GET methods first, then param-bearing.
@@ -246,6 +246,7 @@ function Build-Report {
     $glAll = @(GJson '06_js\gitleaks.json' | Where-Object { $_ }); $glSpec = @($glAll | Where-Object { $_.RuleID -and $_.RuleID -ne 'generic-api-key' }); $glGen = @($glAll | Where-Object { $_.RuleID -eq 'generic-api-key' })
     $libs = @{}   # retire.js vuln libs (populated in section 2; pre-init so the HTML build always has it)
     $tech    = GLines '08_tech\fingerprint.txt'
+    $techLive = GLines '08_tech\fingerprint_live.txt'   # httpx -td CURRENT tech (present only on a -Probe run)
     $smSrc   = GLines '06_js\sourcemap_sources.txt'
     $smRef   = GLines '06_js\sourcemap_refs.txt'
     $apiEp   = GLines '06_js\api_spec_endpoints.txt'
@@ -387,9 +388,13 @@ function Build-Report {
         W ""; W ("**DNS / mail hygiene:** " + $(if ($spfMiss) { 'SPF **MISSING**; ' } else { 'SPF ok; ' }) + $(if ($dmarcMiss) { 'DMARC **MISSING**; ' } else { 'DMARC ok; ' }) + $(if (@($dsec).Count) { $(if ($unsigned) { 'DNSSEC **unsigned**; ' } else { 'DNSSEC signed; ' }) + $(if ($noCaa) { 'CAA **none**' } else { 'CAA set' }) } else { '' }) + " (01_scope\dns_records.txt + dns_security.txt)")
         if ($axfr.Count) { W ""; W ('> **AXFR ZONE TRANSFER ALLOWED** - ' + (($axfr -replace 'AXFR: ZONE TRANSFER ALLOWED -> ', '') -join '; ') + '. The full DNS zone is dumpable from the nameserver(s) - treat as a finding.') }
     }
+    if (@($techLive).Count) {
+        $techLiveNames = @($techLive | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
+        W ""; W ("**Technology (live, httpx -td):** " + (($techLiveNames | Select-Object -First 20) -join ', '))
+    }
     if (@($tech).Count) {
         $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
-        W ""; W ("**Technology** (passive fingerprint): " + (($techNames | Select-Object -First 14) -join ', '))
+        W ""; W (("**Technology ({0}fingerprint):** " -f $(if (@($techLive).Count) { 'archived ' } else { 'passive ' })) + (($techNames | Select-Object -First 14) -join ', '))
     }
     W ""
     W "## 2. Vulnerabilities (passive)"
@@ -684,11 +689,21 @@ function Build-Report {
         HW ('<div style="font-size:13px;margin-top:6px">DNS / mail: SPF <span style="color:{0};font-weight:500">{1}</span> &middot; DMARC <span style="color:{2};font-weight:500">{3}</span>{4}</div>' -f $(if ($spfMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($spfMiss) { 'missing' } else { 'ok' }), $(if ($dmarcMiss) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($dmarcMiss) { 'missing' } else { 'ok' }), $(if (@($dsec).Count) { (' &middot; DNSSEC <span style="color:{0};font-weight:500">{1}</span> &middot; CAA <span style="color:{2};font-weight:500">{3}</span>' -f $(if ($unsigned) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($unsigned) { 'unsigned' } else { 'signed' }), $(if ($noCaa) { 'var(--dn)' } else { 'var(--ok)' }), $(if ($noCaa) { 'none' } else { 'set' })) } else { '' }))
         if (@($axfr).Count) { HW '<div style="font-size:13px;margin-top:6px;color:var(--dn);font-weight:600">&#9888; AXFR zone transfer ALLOWED - the full DNS zone is dumpable</div>' }
     }
-    if (@($tech).Count) {
-        $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
-        HW '<div style="margin-top:10px"><div class="muted" style="font-size:12px;margin-bottom:4px">Technology</div><div style="display:flex;flex-wrap:wrap;gap:7px">'
-        foreach ($tn in ($techNames | Select-Object -First 18)) { HW ('<span class="pill" style="background:var(--tile);color:var(--text)">{0}</span>' -f (HE $tn)) }
-        HW '</div></div>'
+    $techLiveNames = @($techLive | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
+    if (@($techLiveNames).Count -or @($tech).Count) {
+        HW '<div style="margin-top:10px">'
+        if (@($techLiveNames).Count) {
+            HW '<div class="muted" style="font-size:12px;margin-bottom:4px">Technology <span style="color:var(--ok);font-weight:600">&middot; live</span> <span class="faint" style="color:var(--faint)">(httpx -td, current)</span></div><div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px">'
+            foreach ($tn in ($techLiveNames | Select-Object -First 20)) { HW ('<span class="pill" style="background:var(--ok-bg);color:var(--ok)">{0}</span>' -f (HE $tn)) }
+            HW '</div>'
+        }
+        if (@($tech).Count) {
+            $techNames = @($tech | ForEach-Object { ($_ -split '\s{2,}')[0].Trim() } | Where-Object { $_ } | Select-Object -Unique)
+            HW ('<div class="muted" style="font-size:12px;margin-bottom:4px">Technology{0}</div><div style="display:flex;flex-wrap:wrap;gap:7px">' -f $(if (@($techLiveNames).Count) { ' <span class="faint" style="color:var(--faint)">&middot; archived / historical</span>' } else { '' }))
+            foreach ($tn in ($techNames | Select-Object -First 18)) { HW ('<span class="pill" style="background:var(--tile);color:var(--text)">{0}</span>' -f (HE $tn)) }
+            HW '</div>'
+        }
+        HW '</div>'
     }
     HW '</div>'
     HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> Known vulnerabilities</h2>'
@@ -1128,7 +1143,7 @@ function Get-EndpointsFromText {
     # extract absolute URLs + quoted site-relative paths from a blob of text (JS/HTML/JSON) into $sink (a HashSet).
     # shared by P6 (archived bodies) and P8 live-JS so both use the identical, proven extraction.
     param([string]$c, $sink)
-    foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
+    foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { $u = ($m.Value -replace '[\\",''<>);]+$', ''); if ($u -notmatch '[^\x00-\x7F]') { [void]$sink.Add($u) } }   # URLs are ASCII; drop non-ASCII (mojibake / over-match into surrounding text)
     foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
 }
 function Get-WebSocketRefs {
@@ -1338,7 +1353,7 @@ function Expand-SourceMaps {
     param([System.IO.FileInfo[]]$MapFiles, [string]$OutDir)
     $written = 0; $mapsUsed = 0
     foreach ($mf in $MapFiles) {
-        $raw = ''; try { $raw = Get-Content $mf.FullName -Raw -ErrorAction Stop } catch { continue }
+        $raw = ''; try { $raw = Get-Content $mf.FullName -Raw -Encoding UTF8 -ErrorAction Stop } catch { continue }
         # httpx -sr prepends the HTTP request/response headers; the .map JSON is the {...} body. Archived bodies are already pure.
         $bi = $raw.IndexOf('{'); $bj = $raw.LastIndexOf('}'); if ($bi -lt 0 -or $bj -le $bi) { continue }
         $j = $null; try { $j = $raw.Substring($bi, $bj - $bi + 1) | ConvertFrom-Json } catch { continue }
@@ -1816,7 +1831,7 @@ function Phase6-Js {
     $apiEp = New-Object System.Collections.Generic.List[string]; $apiSpecN = 0
     $ws = New-Object System.Collections.Generic.HashSet[string]
     foreach ($f in $bodyFiles) {
-        $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+        $c = Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if (-not $c) { continue }
         if ($corpus.Length -lt 3000000) { $seg = $(if ($c.Length -gt 80000) { $c.Substring(0, 80000) } else { $c }); [void]$corpus.Append($seg).Append("`n") }
         Get-EndpointsFromText $c $links
@@ -1904,7 +1919,7 @@ function Phase6-Js {
         if ($recon.files) {
             $reFiles = @(Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)
             $reLinks = New-Object System.Collections.Generic.HashSet[string]
-            foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+            foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
             $reDelta = @($reLinks | Where-Object { -not $links.Contains($_) }).Count
             foreach ($u in $reLinks) { [void]$links.Add($u) }
             Save-Lines (Join-Path $jsDir 'endpoints.txt') (@($links) | Sort-Object)   # re-save endpoints.txt incl. reconstructed-source endpoints
@@ -2196,18 +2211,23 @@ function Phase8-Live {
     Remove-Item $jsonl -Force -ErrorAction SilentlyContinue
     Write-Log ("probing {0} in-scope URLs at <={1} req/s (single GET each, no redirect-follow)..." -f $cands.Count, $Rate) 'INFO'
     # -duc = disable httpx's startup update-check (it phones GitHub and HANGS on egress-restricted hosts like a VDI)
-    Invoke-Tool $hx @('-l', $candFile, '-json', '-o', $jsonl, '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '10', '-retries', '1') -TimeoutSec 1200 | Out-Null
+    # -td = tech-detect: httpx runs its Wappalyzer engine on the LIVE responses (headers/cookies/meta/body) as part of
+    # the probe (no extra requests) -> CURRENT tech, more accurate than matching regex against archived HTML.
+    Invoke-Tool $hx @('-l', $candFile, '-json', '-td', '-o', $jsonl, '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '10', '-retries', '1') -TimeoutSec 1200 | Out-Null
     if (-not (Test-Path $jsonl)) { Write-Log 'httpx produced no output -> no live URLs' 'WARN'; return }
     # keep only "exists" statuses: 2xx/3xx plus auth-gated 401/403. Drop 404/410/dead.
     $liveUrls = New-Object System.Collections.Generic.List[string]
     $rows = New-Object System.Collections.Generic.List[string]
+    $liveTech = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($ln in (Get-Content $jsonl -ErrorAction SilentlyContinue)) {
         if (-not "$ln".Trim()) { continue }
         try { $j = $ln | ConvertFrom-Json } catch { continue }
         $sc = [int]$j.status_code
         if (-not (($sc -ge 200 -and $sc -lt 400) -or $sc -eq 401 -or $sc -eq 403)) { continue }
-        if ($j.url) { $liveUrls.Add([string]$j.url); $rows.Add($ln) }
+        if ($j.url) { $liveUrls.Add([string]$j.url); $rows.Add($ln); foreach ($tt in @($j.tech)) { if ($tt) { [void]$liveTech.Add([string]$tt) } } }
     }
+    # CURRENT tech (kept separate from the archived fingerprint so the report can show live-vs-historical)
+    if ($liveTech.Count) { Save-Lines (Join-Path $pkg '08_tech\fingerprint_live.txt') (@($liveTech) | Sort-Object); Write-Log ('live tech (httpx -td): {0} detected -> 08_tech\fingerprint_live.txt' -f $liveTech.Count) 'OK' }
     $liveSorted = @($liveUrls | Sort-Object -Unique)
     $liveUris = New-Object System.Collections.Generic.List[string]
     foreach ($u in $liveSorted) { try { $pq = ([uri]$u).PathAndQuery; if ($pq -and $pq -ne '/') { $liveUris.Add($pq) } } catch {} }
@@ -2243,7 +2263,7 @@ function Phase8-LiveJs {
     # are directly comparable in one scan (regex-only vs what jsluice adds on top).
     $rx = New-Object System.Collections.Generic.HashSet[string]
     $ws = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $rx; Get-WebSocketRefs $c $ws } }
+    foreach ($f in $bodies) { $c = Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue; if ($c) { Get-EndpointsFromText $c $rx; Get-WebSocketRefs $c $ws } }
     if ($ws.Count) { Save-Lines (Join-Path $liveDir 'live_websockets.txt') (@($ws) | Sort-Object); Write-Log ('live WebSocket endpoint(s): {0} -> 08_live\live_websockets.txt' -f $ws.Count) 'OK' }
     $all = New-Object System.Collections.Generic.HashSet[string]
     foreach ($u in $rx) { [void]$all.Add($u) }
@@ -2282,7 +2302,7 @@ function Phase8-LiveJs {
             if ($recon.files) {
                 $reFiles = @(Get-ChildItem $smDir -Recurse -File -ErrorAction SilentlyContinue)
                 $reLinks = New-Object System.Collections.Generic.HashSet[string]
-                foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
+                foreach ($rf in $reFiles) { $rc = Get-Content $rf.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue; if ($rc) { Get-EndpointsFromText $rc $reLinks } }
                 $reDelta = @($reLinks | Where-Object { -not $all.Contains($_) }).Count
                 foreach ($u in $reLinks) { [void]$all.Add($u) }
                 Save-Lines (Join-Path $liveDir 'live_js_endpoints.txt') (@($all) | Sort-Object)
