@@ -1143,7 +1143,7 @@ function Get-EndpointsFromText {
     # extract absolute URLs + quoted site-relative paths from a blob of text (JS/HTML/JSON) into $sink (a HashSet).
     # shared by P6 (archived bodies) and P8 live-JS so both use the identical, proven extraction.
     param([string]$c, $sink)
-    foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { $u = ($m.Value -replace '[\\",''<>);]+$', ''); if ($u -notmatch '[^\x00-\x7F]') { [void]$sink.Add($u) } }   # URLs are ASCII; drop non-ASCII (mojibake / over-match into surrounding text)
+    foreach ($m in [regex]::Matches($c, 'https?://[^\s"''<>()]{6,}'))                              { $u = ($m.Value -replace '[\\",''<>);]+$', ''); if ($u -notmatch '[^\x20-\x7E]') { [void]$sink.Add($u) } }   # keep only printable-ASCII URLs; drops mojibake, over-match into text, AND control-char garbage from binary/minified blobs
     foreach ($m in [regex]::Matches($c, '["''](/[a-zA-Z0-9_\-./]{2,}[a-zA-Z0-9_\-./?=&%]*)["'']')) { [void]$sink.Add($m.Groups[1].Value) }
 }
 function Get-WebSocketRefs {
@@ -1151,7 +1151,7 @@ function Get-WebSocketRefs {
     # URL passed to `new WebSocket(...)` (incl. a socket.io path). Site-relative WS paths kept too, but the indicator
     # (ws/websocket/socket.io/sockjs/cable) must be a whole path SEGMENT -- else substrings like "aws"/"views" match. -> $sink.
     param([string]$c, $sink)
-    foreach ($m in [regex]::Matches($c, '(?i)wss?://[^\s"''<>()\\]{4,}'))                    { [void]$sink.Add(($m.Value -replace '[\\",''<>);]+$', '')) }
+    foreach ($m in [regex]::Matches($c, '(?i)wss?://[^\s"''<>()\\]{4,}'))                    { $w = ($m.Value -replace '[\\",''<>);]+$', ''); if ($w -notmatch '[^\x20-\x7E]') { [void]$sink.Add($w) } }
     foreach ($m in [regex]::Matches($c, '(?i)new\s+WebSocket\s*\(\s*["'']([^"''\\]{2,})["'']')) { [void]$sink.Add($m.Groups[1].Value) }
     foreach ($m in [regex]::Matches($c, '(?i)["''](/(?:[a-z0-9_\-.]+/)*(?:ws|wss|websocket|socket\.io|sockjs|cable|actioncable)(?:/[a-z0-9_\-./]*)?)(?=["''?])')) { [void]$sink.Add($m.Groups[1].Value) }
 }
@@ -1240,7 +1240,8 @@ function Get-JsluiceApiMap {
         if (-not $out) { continue }
         foreach ($ln in $out) {
             $j = $null; try { $j = $ln | ConvertFrom-Json } catch {}; if (-not $j -or -not $j.url) { continue }
-            $u = [string]$j.url; [void]$urls.Add($u)
+            $u = [string]$j.url; if ($u -match '[^\x20-\x7E]') { continue }   # jsluice can emit control-char / binary garbage as a "url" from minified blobs - a real path is printable ASCII
+            [void]$urls.Add($u)
             if (-not $api.ContainsKey($u)) { $api[$u] = @{ m = (New-Object System.Collections.Generic.HashSet[string]); q = (New-Object System.Collections.Generic.HashSet[string]); b = (New-Object System.Collections.Generic.HashSet[string]) } }
             if ($j.method) { [void]$api[$u].m.Add([string]$j.method) }
             foreach ($qp in @($j.queryParams)) { if ($qp) { [void]$api[$u].q.Add([string]$qp) } }
