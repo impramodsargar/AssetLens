@@ -56,7 +56,7 @@ $script:FailedSources = New-Object System.Collections.Generic.List[string]
 # auto-resume: an interrupted scan (dropped net / crash) is detected on the next run of the SAME host and continued
 # from the first unfinished phase - no flag. A checkpoint (.state.json) + OOS snapshot (.oos.txt) live in the package.
 $script:ResumeDone = @(); $script:IsResume = $false
-function Read-ReconState { param($PkgDir) $sf = Join-Path $PkgDir '.state.json'; if (Test-Path $sf) { try { return (Get-Content $sf -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {} }; return $null }
+function Read-ReconState { param($PkgDir) $sf = Join-Path $PkgDir '.state.json'; if (Test-Path $sf) { try { return (Get-Content $sf -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json) } catch {} }; return $null }
 function Write-ReconState {
     param($PkgDir, [string[]]$Done, [string]$Status)
     $o = [pscustomobject]@{ host = $Target; probe = [bool]$Probe; strict = [bool]$Strict; keyless = [bool]$Keyless; done = @($Done); status = $Status; updated = (Get-Date -Format 'o') }
@@ -212,7 +212,7 @@ function Build-Report {
     # resolve for READING: prefer the _raw\ copy (raw dumps moved there), fall back to the phase root (txt outputs + old packages).
     function Pr    { param($rel) $p = P $rel; $r = Join-Path (Join-Path (Split-Path $p -Parent) '_raw') (Split-Path $p -Leaf); if (Test-Path $r) { $r } else { $p } }
     function GJson { param($rel) $p = Pr $rel; if (Test-Path $p) { try { return (Get-Content $p -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json) } catch { return $null } } return $null }
-    function GLines{ param($rel) $p = Pr $rel; if (Test-Path $p) { return @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
+    function GLines{ param($rel) $p = Pr $rel; if (Test-Path $p) { return @(Get-Content $p -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } return @() }
     function Has   { param($rel) Test-Path (Pr $rel) }
     # preview ordering for the jsluice API maps: float the highest-signal lines up - non-GET methods first, then param-bearing.
     function ApiRank { param($lines) @($lines | Sort-Object @{ e = { if ($_ -match '^(POST|PUT|PATCH|DELETE)\b') { 0 } elseif ($_ -match '\[') { 1 } else { 2 } } }, @{ e = { $_ } }) }
@@ -221,7 +221,7 @@ function Build-Report {
 
     $host_ = (Split-Path $Package -Leaf) -replace '_\d{8}(-\d{6})?$', ''
     $ip    = if (Has '01_scope\ip.txt') { $t = @(GLines '01_scope\ip.txt'); if ($t.Count) { $t[0] } else { '' } } else { '' }
-    $cdn   = if (Has '01_scope\cdn_flag.txt') { (Get-Content (P '01_scope\cdn_flag.txt') -Raw).Trim() } else { '' }
+    $cdn   = if (Has '01_scope\cdn_flag.txt') { (Get-Content (P '01_scope\cdn_flag.txt') -Raw -Encoding UTF8).Trim() } else { '' }
     $cdnName = if ($cdn) { ((($cdn -split ':')[-1]) -split '->')[0].Trim() } else { '' }
     $dns     = GLines '01_scope\dns_records.txt'
     $rdapIp  = GJson '01_scope\rdap_ip.json'
@@ -260,8 +260,8 @@ function Build-Report {
     $m365    = GJson '01_scope\m365.json'
     $abuse   = GJson '03_scan\abuseipdb.json'
     $otx     = GJson '07_osint\otx_host.json'
-    $worldPath = ''; $wpf = Join-Path $ScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw).Trim() }
-    $flagSvg = ''; $fff = Join-Path $Package '01_scope\flag.svg'; if (Test-Path $fff) { $flagSvg = (Get-Content $fff -Raw).Trim() }
+    $worldPath = ''; $wpf = Join-Path $ScriptRoot 'config\worldmap.txt'; if (Test-Path $wpf) { $worldPath = (Get-Content $wpf -Raw -Encoding UTF8).Trim() }
+    $flagSvg = ''; $fff = Join-Path $Package '01_scope\flag.svg'; if (Test-Path $fff) { $flagSvg = (Get-Content $fff -Raw -Encoding UTF8).Trim() }
 
     $owner = ''
     if ($rdapIp) { $owner = [string]$rdapIp.name }
@@ -407,7 +407,7 @@ function Build-Report {
         $idx = @{}
         $idxFile = P '06_js\responses\waymore_index.txt'
         if (Test-Path $idxFile) {
-            foreach ($ln in (Get-Content $idxFile -ErrorAction SilentlyContinue)) {
+            foreach ($ln in (Get-Content $idxFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
                 $parts = $ln -split ',', 3
                 if ($parts.Count -ge 2) { $fid = $parts[0].Trim(); $u = ($parts[1].Trim()) -replace '^https?://web\.archive\.org/web/\w+/', ''; if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $u } }
             }
@@ -856,7 +856,7 @@ function Invoke-MapUat {
     $uriRel = if ($WithParams) { '05_history\uris_with_query.txt' } else { '05_history\uris.txt' }
     $src = Join-Path $Package $uriRel
     if (-not (Test-Path $src)) { throw "Not found: $src  (run a recon first)" }
-    $uris = @(Get-Content $src | Where-Object { $_ })
+    $uris = @(Get-Content $src -Encoding UTF8 | Where-Object { $_ })
     $targets = @($uris | ForEach-Object { $UatBase + $_ } | Sort-Object -Unique)
     $outFile = Join-Path $Package '05_history\uat_targets.txt'
     [System.IO.File]::WriteAllLines($outFile, [string[]]$targets, $u8)
@@ -902,7 +902,7 @@ function New-PackageZip {
 function Invoke-Diff {
     param([Parameter(Mandatory = $true)][string]$New, [Parameter(Mandatory = $true)][string]$Old)
     foreach ($p in $New, $Old) { if (-not (Test-Path $p)) { throw "Package not found: $p" } }
-    function RL { param($dir, $rel) $p = Join-Path $dir $rel; if (Test-Path $p) { @(Get-Content $p -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } else { @() } }
+    function RL { param($dir, $rel) $p = Join-Path $dir $rel; if (Test-Path $p) { @(Get-Content $p -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }) } else { @() } }
     $sets = @(
         @{ rel = '08_tech\internetdb_vulns.txt'; label = 'CVEs' },
         @{ rel = '02_certs\sans.txt';            label = 'Cert SANs' },
@@ -993,7 +993,7 @@ function Write-ComparerFeed {
     foreach ($rel in @('08_live\live_urls.txt', '08_live\live_js_endpoints.txt', '08_live\well_known_urls.txt', '06_js\endpoints.txt', '05_history\urls_deduped.txt')) {
         $p = Join-Path $Package $rel
         if (-not (Test-Path $p)) { continue }
-        foreach ($line in (Get-Content $p -ErrorAction SilentlyContinue)) {
+        foreach ($line in (Get-Content $p -Encoding UTF8 -ErrorAction SilentlyContinue)) {
             $u = "$line".Trim()
             if (-not $u -or $u[0] -eq '#') { continue }
             if ($u -match '^(?i)(data:|javascript:|mailto:|tel:)') { continue }
@@ -1447,7 +1447,7 @@ $InScope = @($Target)
 $OOS     = New-Object System.Collections.Generic.List[string]
 # auto-resume: restore the OOS accumulator snapshotted after the last completed phase, so phases skipped on resume
 # don't drop their off-host findings from the final OOS_observed.txt.
-if ($script:IsResume) { $oosSnap = Join-Path $pkg '.oos.txt'; if (Test-Path $oosSnap) { foreach ($l in (Get-Content $oosSnap -ErrorAction SilentlyContinue)) { $s = [string]$l; if ($s -and -not $OOS.Contains($s)) { $OOS.Add($s) } } } }
+if ($script:IsResume) { $oosSnap = Join-Path $pkg '.oos.txt'; if (Test-Path $oosSnap) { foreach ($l in (Get-Content $oosSnap -Encoding UTF8 -ErrorAction SilentlyContinue)) { $s = [string]$l; if ($s -and -not $OOS.Contains($s)) { $OOS.Add($s) } } } }
 function Test-InScope { param($h) return (([string]$h).ToLower() -in $InScope) }
 function Add-OOS {
     param($Name, $Source)
@@ -1737,7 +1737,7 @@ function Phase5-History {
     New-Item -ItemType Directory -Force -Path $respDir | Out-Null
     $wmUrls = Get-RawPath (Join-Path $pkg '05_history\waymore_urls.txt')
     Invoke-Tool 'waymore' @('-i', $Target, '-mode', 'B', '--providers', 'wayback,commoncrawl,otx,urlscan,ghostarchive', '-oU', $wmUrls, '-oR', $respDir, '-l', '500', '-ci', 'none', '-p', '4') -TimeoutSec 600 | Out-Null
-    if (Test-Path $wmUrls) { foreach ($u in (Get-Content $wmUrls -ErrorAction SilentlyContinue)) { if ($u) { [void]$urls.Add([string]$u) } } }
+    if (Test-Path $wmUrls) { foreach ($u in (Get-Content $wmUrls -Encoding UTF8 -ErrorAction SilentlyContinue)) { if ($u) { [void]$urls.Add([string]$u) } } }
     Write-Log ('URL collection: gau + waymore (mode B, +GhostArchive) -> {0} raw URL(s)' -f $urls.Count) 'OK'
 
     # scope hygiene: archived-URL sources (esp. urlscan's domain: search) surface pages that merely REFERENCE the
@@ -1900,7 +1900,7 @@ function Phase6-Js {
         $wiFile = Join-Path $respDir 'waymore_index.txt'
         if (Test-Path $wiFile) {
             $idMap = @{}
-            foreach ($line in (Get-Content $wiFile -ErrorAction SilentlyContinue)) { $p = $line -split ',', 3; if ($p.Count -lt 2) { continue }; $au = $p[1].Trim(); $li = $au.LastIndexOf('https://'); if ($li -lt 0) { $li = $au.LastIndexOf('http://') }; if ($li -ge 0) { $idMap[$p[0].Trim()] = $au.Substring($li) } }
+            foreach ($line in (Get-Content $wiFile -Encoding UTF8 -ErrorAction SilentlyContinue)) { $p = $line -split ',', 3; if ($p.Count -lt 2) { continue }; $au = $p[1].Trim(); $li = $au.LastIndexOf('https://'); if ($li -lt 0) { $li = $au.LastIndexOf('http://') }; if ($li -ge 0) { $idMap[$p[0].Trim()] = $au.Substring($li) } }
             foreach ($b in $jsBodies) { $id = [IO.Path]::GetFileNameWithoutExtension($b.Name); if ($idMap.ContainsKey($id)) { $jUrlMap[$b.FullName] = $idMap[$id] } }
         }
         $deep = Invoke-JsluiceDeep $jsl @($jsBodies.FullName) $jsDir '' $jUrlMap
@@ -1935,17 +1935,17 @@ function Phase6-Js {
     }
     # tech fingerprint: body signatures + URL extensions + InternetDB CPEs -> 08_tech\fingerprint.txt
     $extHints = [ordered]@{ '.aspx' = 'ASP.NET'; '.asmx' = 'ASP.NET web service'; '.axd' = 'ASP.NET'; '.ashx' = 'ASP.NET handler'; '.jsp' = 'Java/JSP'; '.jspx' = 'Java/JSP'; '.do' = 'Java (Struts/Spring)'; '.action' = 'Java Struts'; '.php' = 'PHP'; '.cfm' = 'ColdFusion'; '.vue' = 'Vue.js' }
-    $extsF = @(); if (Test-Path (Join-Path $pkg '05_history\extensions.txt')) { $extsF = @(Get-Content (Join-Path $pkg '05_history\extensions.txt') -ErrorAction SilentlyContinue) }
+    $extsF = @(); if (Test-Path (Join-Path $pkg '05_history\extensions.txt')) { $extsF = @(Get-Content (Join-Path $pkg '05_history\extensions.txt') -Encoding UTF8 -ErrorAction SilentlyContinue) }
     $techOut = New-Object System.Collections.Generic.List[string]
     foreach ($tk in ($techHits.Keys | Sort-Object { $techHits[$_] } -Descending)) { $techOut.Add(('{0,-22} {1} bodies' -f $tk, $techHits[$tk])) }
     foreach ($eh in $extHints.Keys) { if ($extsF | Where-Object { $_ -match ([regex]::Escape($eh) + '$') }) { $techOut.Add(('{0,-22} (via {1} URLs)' -f $extHints[$eh], $eh)) } }
-    if (Test-Path (Join-Path $pkg '08_tech\cpes.txt')) { foreach ($cp in (Get-Content (Join-Path $pkg '08_tech\cpes.txt') -ErrorAction SilentlyContinue)) { if ($cp) { $techOut.Add(('{0,-22} (InternetDB CPE)' -f $cp)) } } }
+    if (Test-Path (Join-Path $pkg '08_tech\cpes.txt')) { foreach ($cp in (Get-Content (Join-Path $pkg '08_tech\cpes.txt') -Encoding UTF8 -ErrorAction SilentlyContinue)) { if ($cp) { $techOut.Add(('{0,-22} (InternetDB CPE)' -f $cp)) } } }
     # Wappalyzer-style passive fingerprint: match the bundled MIT ruleset (config\wappalyzer.json) against the body
     # corpus. Zero new requests - reads only the bodies waymore already pulled. Broadens beyond the curated $techSig.
     $wappaFile = Join-Path $ScriptRoot 'config\wappalyzer.json'
     if ((Test-Path $wappaFile) -and $corpus.Length -gt 200) {
         $corpusStr = $corpus.ToString()
-        $wappa = $null; try { $wappa = Get-Content $wappaFile -Raw | ConvertFrom-Json } catch { Write-Log "wappalyzer.json parse failed: $($_.Exception.Message)" 'WARN' }
+        $wappa = $null; try { $wappa = Get-Content $wappaFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Write-Log "wappalyzer.json parse failed: $($_.Exception.Message)" 'WARN' }
         if ($wappa) {
             $already = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($tk in $techHits.Keys) { [void]$already.Add([string]$tk) }
@@ -1989,7 +1989,7 @@ function Phase6-Js {
     $gfIn = New-Object System.Collections.Generic.HashSet[string]
     foreach ($u in $links) { if ($u -match '\?') { if ($u.StartsWith('/') -and -not $u.StartsWith('//')) { [void]$gfIn.Add($u) } elseif ($u -match '^https?://([^/:]+)' -and (Test-InScope $matches[1])) { [void]$gfIn.Add($u) } } }
     $hf = Join-Path $pkg '05_history\urls_deduped.txt'
-    if (Test-Path $hf) { foreach ($u in (Get-Content $hf -ErrorAction SilentlyContinue)) { if ($u -match '\?' -and $u -match '^https?://([^/:]+)' -and (Test-InScope $matches[1])) { [void]$gfIn.Add($u) } } }
+    if (Test-Path $hf) { foreach ($u in (Get-Content $hf -Encoding UTF8 -ErrorAction SilentlyContinue)) { if ($u -match '\?' -and $u -match '^https?://([^/:]+)' -and (Test-InScope $matches[1])) { [void]$gfIn.Add($u) } } }
     if ($gfIn.Count) {
         $buckets = Get-BugClassBuckets @($gfIn)
         $gfDir = Join-Path $jsDir 'gf'; New-Item -ItemType Directory -Force -Path $gfDir | Out-Null
@@ -2129,7 +2129,7 @@ In-scope: $Target (single host). Every other host/IP/asset discovered is in
 
 function Write-Worklist {
     param($IP)
-    $origins = if ($script:OriginCandidates -and $script:OriginCandidates.Count) { ($script:OriginCandidates -join ', ') } elseif (Test-Path (Join-Path $pkg '04_origin\candidates.txt')) { $oc = @(Get-Content (Join-Path $pkg '04_origin\candidates.txt') -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }); if ($oc.Count) { ($oc -join ', ') } else { '(none found)' } } else { '(none found)' }
+    $origins = if ($script:OriginCandidates -and $script:OriginCandidates.Count) { ($script:OriginCandidates -join ', ') } elseif (Test-Path (Join-Path $pkg '04_origin\candidates.txt')) { $oc = @(Get-Content (Join-Path $pkg '04_origin\candidates.txt') -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^\s*#' }); if ($oc.Count) { ($oc -join ', ') } else { '(none found)' } } else { '(none found)' }
     Save-Text (Join-Path $pkg 'Verify.md') @"
 # Verify - $Target
 
@@ -2200,7 +2200,7 @@ function Phase8-Live {
     $urlSrc = if (Test-Path (Join-Path $histDir 'urls_deduped.txt')) { Join-Path $histDir 'urls_deduped.txt' } else { Join-Path $histDir 'all_urls.txt' }
     $rawCands = New-Object System.Collections.Generic.List[string]
     foreach ($src in @($urlSrc, (Join-Path $jsDir 'endpoints.txt'), (Join-Path $jsDir 'api_spec_endpoints.txt'))) {
-        if (Test-Path $src) { foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) { $rawCands.Add([string]$e) } }
+        if (Test-Path $src) { foreach ($e in (Get-Content $src -Encoding UTF8 -ErrorAction SilentlyContinue)) { $rawCands.Add([string]$e) } }
     }
     $cands = Get-ActiveTargets $rawCands   # single active-scope chokepoint (target + www/non-www only)
     if ($cands.Count -eq 0) { Write-Log 'no in-scope candidates to probe' 'INFO'; return }
@@ -2219,7 +2219,7 @@ function Phase8-Live {
     $liveUrls = New-Object System.Collections.Generic.List[string]
     $rows = New-Object System.Collections.Generic.List[string]
     $liveTech = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($ln in (Get-Content $jsonl -ErrorAction SilentlyContinue)) {
+    foreach ($ln in (Get-Content $jsonl -Encoding UTF8 -ErrorAction SilentlyContinue)) {
         if (-not "$ln".Trim()) { continue }
         try { $j = $ln | ConvertFrom-Json } catch { continue }
         $sc = [int]$j.status_code
@@ -2249,7 +2249,7 @@ function Phase8-LiveJs {
     # in-scope .js URLs (P5 js list, P6 endpoints, live URLs), scoped to the target + its www/non-www counterpart
     $rawJs = New-Object System.Collections.Generic.List[string]
     foreach ($src in @((Join-Path $pkg '05_history\js_urls.txt'), (Join-Path $pkg '06_js\endpoints.txt'), (Join-Path $liveDir 'live_urls.txt'))) {
-        if (Test-Path $src) { foreach ($e in (Get-Content $src -ErrorAction SilentlyContinue)) { $t = "$e".Trim(); if ($t -match '\.js($|\?)') { $rawJs.Add($t) } } }
+        if (Test-Path $src) { foreach ($e in (Get-Content $src -Encoding UTF8 -ErrorAction SilentlyContinue)) { $t = "$e".Trim(); if ($t -match '\.js($|\?)') { $rawJs.Add($t) } } }
     }
     $js = Get-ActiveTargets $rawJs   # single active-scope chokepoint (target + www/non-www only)
     if ($js.Count -eq 0) { Write-Log 'no in-scope live JS candidates' 'INFO'; return }
@@ -2281,7 +2281,7 @@ function Phase8-LiveJs {
         # jsluice deep pass (AST query) on the LIVE code -> 08_live\live_dom_sinks/postmessage/graphql_ops.txt
         # map each fetched live body -> its URL (httpx -sr index) so deep-pass findings cite the source JS file
         $jUrlMap = @{}
-        foreach ($idxF in @(Get-ChildItem $ljDir -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) { foreach ($line in (Get-Content $idxF.FullName -ErrorAction SilentlyContinue)) { $mm = [regex]::Match($line, '^(\S+)\s+(https?://\S+)'); if ($mm.Success) { $jUrlMap[$mm.Groups[1].Value] = $mm.Groups[2].Value } } }
+        foreach ($idxF in @(Get-ChildItem $ljDir -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) { foreach ($line in (Get-Content $idxF.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) { $mm = [regex]::Match($line, '^(\S+)\s+(https?://\S+)'); if ($mm.Success) { $jUrlMap[$mm.Groups[1].Value] = $mm.Groups[2].Value } } }
         $deep = Invoke-JsluiceDeep $jsl @($bodies.FullName) $liveDir 'live_' $jUrlMap
         Write-Log ('live jsluice deep: {0} DOM sink(s) ({1} likely user-controlled) | {2} postMessage ({3} no-origin) | {4} GraphQL op(s)' -f $deep.sinks, $deep.sinksHigh, $deep.pm, $deep.pmOpen, $deep.gql) 'OK'
     } else {
