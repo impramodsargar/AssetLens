@@ -109,6 +109,7 @@ The **keyless core** (RDAP, crt.sh, Shodan-InternetDB, web archives, LeakCheck, 
 | Command | What it does |
 |---|---|
 | `Invoke-AssetLens.ps1 <host> [-Probe] [-Sow <n>]` | **RECON** → package + `Report.md` + auto-zip |
+| `... -Targets hosts.txt [-Probe]` | **BATCH** → RECON each host in the file, one package each + roll-up (scopes never merged) |
 | `... -Setup [-SkipBase]` | install the toolchain |
 | `... -Validate` | preflight every key + tool (hits providers + benign IPs, never a target) |
 | `... -Report -Package <dir>` | rebuild `Report.md` — pure-local |

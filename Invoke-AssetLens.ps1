@@ -9,6 +9,7 @@
       RECON  (default)  .\Invoke-AssetLens.ps1 app.target.com [-Strict] [-HttpOnly] [-Keyless] [-Enum] [-Probe [-Rate 15]] [-UatBase https://uat..] [-Sow 314824]
                         (auto-zips the finished package + .zip.sha256; raw response bodies excluded - add -FullBodies to keep them)
                         (-Sow <num> names the transfer zip citiva_<num>.zip - Citi VA deliverable convention - instead of <host>_<date>.zip)
+      BATCH             .\Invoke-AssetLens.ps1 -Targets hosts.txt [-Probe]   (RECON each host in the file, one package each; scan flags pass through; roll-up + output\batch_<ts>.txt)
       SETUP             .\Invoke-AssetLens.ps1 -Setup [-SkipBase]
       REPORT (rebuild)  .\Invoke-AssetLens.ps1 -Report -Package .\output\app.target.com_<date>
       MAP-UAT           .\Invoke-AssetLens.ps1 -MapUat -Package .\output\app.target.com_<date> -UatBase https://uat.target.com [-WithParams]
@@ -23,6 +24,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$Target,   # host to recon (RECON mode)
+    [string]$Targets,                           # BATCH: file with one host per line -> full RECON of each (its own package) + roll-up
     [string]$OutRoot = '',
     [switch]$Strict,                            # no DNS resolution; passive-DNS APIs only
     [switch]$HttpOnly,                          # skip CLI tools; HTTP core only
@@ -1032,14 +1034,53 @@ function Show-Banner {
 }
 Show-Banner
 
+function Invoke-Batch {
+    # BATCH RECON over a file of hosts (one per line, '#' comments ok). Each host is a SEPARATE full run in its OWN
+    # package - scopes are never merged (that would break the single-host discipline). Re-invokes THIS script per host,
+    # so every host gets fresh state + its own auto-resume (a re-run of the batch continues any host cut short). Passes
+    # through scan-behaviour flags only (never the single-target deliverable flags -Sow / -UatBase). Prints a roll-up
+    # and writes output\batch_<ts>.txt at the end.
+    param([string]$File)
+    if (-not (Test-Path $File)) { throw "Targets file not found: $File" }
+    $list = @(Get-Content $File -Encoding UTF8 -ErrorAction SilentlyContinue |
+        ForEach-Object { ($_ -replace '^[a-z]+://', '' -replace '/.*$', '').Trim().TrimEnd('.').ToLower() } |
+        Where-Object { $_ -and $_ -notmatch '^#' -and $_ -match '^[a-z0-9.-]+\.[a-z]{2,}$' } | Select-Object -Unique)
+    if (-not $list.Count) { throw "No valid hostnames in $File" }
+    $self = $PSCommandPath; if (-not $self) { $self = Join-Path $ScriptRoot 'Invoke-AssetLens.ps1' }
+    $bp = @{}   # hashtable splat so switch params bind correctly (array splat passes -Switch as a positional value)
+    if ($Strict)   { $bp.Strict = $true }
+    if ($Keyless)  { $bp.Keyless = $true }
+    if ($HttpOnly) { $bp.HttpOnly = $true }
+    if ($Enum)     { $bp.Enum = $true }
+    if ($Probe)    { $bp.Probe = $true; $bp.Rate = $Rate }
+    $flagStr = (@($bp.Keys | Sort-Object | ForEach-Object { if ($_ -eq 'Rate') { "-Rate $($bp.Rate)" } else { "-$_" } }) -join ' ')
+    Write-Host ("== AssetLens batch: {0} target(s){1} ==" -f $list.Count, $(if ($flagStr) { ' [' + $flagStr + ']' } else { '' })) -ForegroundColor Cyan
+    $roll = New-Object System.Collections.Generic.List[string]; $i = 0
+    foreach ($h in $list) {
+        $i++; Write-Host ("`n---- [{0}/{1}] {2} ----" -f $i, $list.Count, $h) -ForegroundColor Cyan
+        $bp.Target = $h
+        try { & $self @bp } catch { Write-Host ("  batch: {0} errored: {1}" -f $h, $_.Exception.Message) -ForegroundColor Yellow }
+        $pk = Get-ChildItem $OutRoot -Directory -Filter ($h + '_*') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($pk) {
+            $live = 0; $lp = Join-Path $pk.FullName '08_live\live_urls.txt'; if (Test-Path $lp) { $live = @(Get-Content $lp -Encoding UTF8 -ErrorAction SilentlyContinue).Count }
+            $oos = 0; $op = Join-Path $pk.FullName 'OOS_observed.txt'; if (Test-Path $op) { $oos = @(Get-Content $op -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -notmatch '^#' }).Count }
+            $roll.Add(('{0,-42} live={1,-6} oos={2,-5} {3}' -f $h, $live, $oos, $pk.Name))
+        } else { $roll.Add(('{0,-42} (no package produced)' -f $h)) }
+    }
+    Write-Host "`n== batch roll-up ==" -ForegroundColor Cyan
+    $roll | ForEach-Object { Write-Host "  $_" }
+    try { $rf = Join-Path $OutRoot ('batch_{0}.txt' -f (Get-Date -Format 'yyyyMMdd-HHmmss')); [System.IO.File]::WriteAllLines($rf, [string[]](@('# AssetLens batch roll-up ' + (Get-Date -Format 'o'), '') + @($roll)), (New-Object System.Text.UTF8Encoding($false))); Write-Host ("roll-up -> {0}" -f $rf) -ForegroundColor Cyan } catch {}
+}
+
 # ================================================================ mode dispatch (non-recon modes return)
 if ($Setup)  { Invoke-Setup -SkipBase:$SkipBase; return }
+if ($Targets) { Invoke-Batch -File $Targets; return }
 if ($Report) { if (-not $Package) { throw 'Use: -Report -Package <packageDir>' }; Build-Report -Package $Package; Write-ComparerFeed -Package $Package; return }
 if ($MapUat) { if (-not $Package -or -not $UatBase) { throw 'Use: -MapUat -Package <packageDir> -UatBase <url>' }; Invoke-MapUat -Package $Package -UatBase $UatBase -WithParams:$WithParams; return }
 if ($Zip)    { if (-not $Package) { throw 'Use: -Zip -Package <packageDir>' }; New-PackageZip -Package $Package -FullBodies:$FullBodies -Sow $Sow; return }
 if ($Diff)   { if (-not $Package -or -not $Against) { throw 'Use: -Diff -Package <newDir> -Against <oldDir>' }; Invoke-Diff -New $Package -Old $Against; return }
 if ($Validate) { Invoke-Validate; return }
-if (-not $Target -and -not ($Phase -and $Package)) { throw 'Provide a target host for RECON, or use -Setup / -Report / -MapUat / -Zip / -Diff / -Validate.' }
+if (-not $Target -and -not ($Phase -and $Package)) { throw 'Provide a target host for RECON, or use -Targets <file> / -Setup / -Report / -MapUat / -Zip / -Diff / -Validate.' }
 
 # ---------------------------------------------------------------- config
 # Default loads config\keys.ps1 (keyed run). -Keyless skips it - keyless sources only.
