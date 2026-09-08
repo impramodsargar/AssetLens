@@ -118,6 +118,17 @@ function Add-ToolPathsToSession {
 Add-ToolPathsToSession
 
 # ================================================================ SETUP mode
+function Get-HttpxPath {
+    # ProjectDiscovery httpx by FULL PATH. The Python 'httpx' package (pulled in by waymore/uro) installs a same-named
+    # httpx.exe that hijacks a bare 'httpx' on PATH and doesn't understand -l/-json/-rl. go install puts the real
+    # prober in GOBIN, else GOPATH\bin, else ~\go\bin. Defined UP HERE (above -Setup / -Validate and the mode dispatch)
+    # so those modes can call it - they run before the phase/extraction defs further down are reached.
+    $dir = ''
+    try { $dir = (& go env GOBIN 2>$null) } catch {}
+    if (-not $dir) { $gp = ''; try { $gp = (& go env GOPATH 2>$null) } catch {}; if (-not $gp) { $gp = Join-Path $env:USERPROFILE 'go' }; $dir = Join-Path $gp 'bin' }
+    $p = Join-Path $dir 'httpx.exe'
+    if (Test-Path $p) { return $p } else { return $null }
+}
 function Invoke-Setup {
     param([switch]$SkipBase)
     function Has { param($n) [bool](Get-Command $n -ErrorAction SilentlyContinue) }
@@ -1169,16 +1180,6 @@ function Invoke-Tool {
     Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue
     Write-Log "$Exe timed out (${TimeoutSec}s) - killed, continuing" 'WARN'
     return $null
-}
-function Get-HttpxPath {
-    # ProjectDiscovery httpx by FULL PATH. The Python 'httpx' package (pulled in by waymore/uro) installs a same-named
-    # httpx.exe that hijacks a bare 'httpx' on PATH and doesn't understand -l/-json/-rl. go install puts the real
-    # prober in GOBIN, else GOPATH\bin, else ~\go\bin.
-    $dir = ''
-    try { $dir = (& go env GOBIN 2>$null) } catch {}
-    if (-not $dir) { $gp = ''; try { $gp = (& go env GOPATH 2>$null) } catch {}; if (-not $gp) { $gp = Join-Path $env:USERPROFILE 'go' }; $dir = Join-Path $gp 'bin' }
-    $p = Join-Path $dir 'httpx.exe'
-    if (Test-Path $p) { return $p } else { return $null }
 }
 function Get-EndpointsFromText {
     # extract absolute URLs + quoted site-relative paths from a blob of text (JS/HTML/JSON) into $sink (a HashSet).
