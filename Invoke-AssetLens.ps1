@@ -349,7 +349,7 @@ function Build-Report {
     W "## Executive summary"
     $hotN = $hot.Count; $secN = ($thVer.Count + $glSpec.Count)
     W ("- **$host_** -> **$ip**" + $(if ($owner) { " ($owner)" } else { '' }) + $(if ($cdnName) { ", behind " + $cdnName } else { '' }) + ".")
-    W ("- Passive intel: **{0} known CVE(s)**{1} (port/service enumeration is left to the separate nmap scan)." -f $vulns.Count, $(if ($cpes.Count) { ", " + $cpes.Count + " tech CPE(s)" } else { '' }))
+    W ("- Passive intel: **{0} CVE lead(s)** (InternetDB, IP-banner - unverified){1} (port/service enumeration is left to the separate nmap scan)." -f $vulns.Count, $(if ($cpes.Count) { ", " + $cpes.Count + " tech CPE(s)" } else { '' }))
     $cdnNote = if ($cdnName) { "behind $cdnName - verify they answer directly (WAF bypass)" } else { "(no CDN/WAF detected - host is served directly)" }
     W ("- **{0} origin-candidate IP(s)** recovered {1}." -f @($cands).Count, $cdnNote)
     W ("- History: **{0} URLs** ({1} after uro dedup, {2} high-signal), **{3} param(s)**, **{4} JS file(s)**." -f @($allUrls).Count, @($dedupUrls).Count, $hotN, @($params).Count, @($jsUrls).Count)
@@ -410,36 +410,28 @@ function Build-Report {
         W ""; W (("**Technology ({0}fingerprint):** " -f $(if (@($techLive).Count) { 'archived ' } else { 'passive ' })) + (($techNames | Select-Object -First 14) -join ', '))
     }
     W ""
-    W "## 2. Vulnerabilities (passive)"
+    W "## 2. Weaknesses to verify (unverified leads)"
     if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) across the exposed IP(s):" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
     else { W "_None flagged by InternetDB. Still version-check the services from the nmap scan._" }
     if ($cpes.Count) { W ""; W ("**Tech / CPEs:** " + (($cpes | Select-Object -First 20) -join ', ')) }
-    # prefer the LIVE retire.js pass (libs the current site actually serves) over the archived one; fall back when no -Probe run.
+    # Vulnerable JS libraries: CVEs are reported ONLY from the VALIDATED live JS (retire on the live bodies). An archived-
+    # snapshot match is NOT proof the vulnerable version is still served, so archived retire hits are never shown as CVEs.
     $liveRetire = Has '08_live\live_js_retire.json'
-    $rj = if ($liveRetire) { GJson '08_live\live_js_retire.json' } else { GJson '06_js\retirejs.json' }
+    $arcHits = 0   # libs retire matched in ARCHIVED snapshots - used ONLY for an unvalidated pointer (never surfaced as CVEs)
+    $arj = GJson '06_js\retirejs.json'
+    if ($arj -and $arj.data) { $ah = New-Object System.Collections.Generic.HashSet[string]; foreach ($d in $arj.data) { foreach ($r in $d.results) { [void]$ah.Add((('{0} {1}' -f $r.component, $r.version).Trim())) } }; $arcHits = $ah.Count }
+    $rank = @{ 'critical' = 0; 'high' = 1; 'medium' = 2; 'low' = 3 }
+    $libs = @{}
+    $rj = if ($liveRetire) { GJson '08_live\live_js_retire.json' } else { $null }
     if ($rj -and $rj.data) {
-        # map each scanned JS body-file -> its real URL so every flagged lib cites a source link
+        # map each live JS body-file -> its real URL (httpx -sr writes index.txt: "<stored-file>  <url>") so each lib cites a live source
         $idx = @{}
-        if ($liveRetire) {
-            # httpx -sr drops an index.txt (<stored-file>  <url>) beside the live JS bodies retire scanned
-            foreach ($idxF in @(Get-ChildItem (P '08_live\js') -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) {
-                foreach ($ln in (Get-Content $idxF.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-                    $mm = [regex]::Match($ln, '^(\S+)\s+(https?://\S+)')
-                    if ($mm.Success) { $fid = [System.IO.Path]::GetFileNameWithoutExtension($mm.Groups[1].Value); if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $mm.Groups[2].Value } }
-                }
-            }
-        } else {
-            # map waymore response-file IDs -> original URLs (strip the web.archive.org/<ts>/ wrapper) so each lib cites a real link
-            $idxFile = P '06_js\responses\waymore_index.txt'
-            if (Test-Path $idxFile) {
-                foreach ($ln in (Get-Content $idxFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-                    $parts = $ln -split ',', 3
-                    if ($parts.Count -ge 2) { $fid = $parts[0].Trim(); $u = ($parts[1].Trim()) -replace '^https?://web\.archive\.org/web/\w+/', ''; if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $u } }
-                }
+        foreach ($idxF in @(Get-ChildItem (P '08_live\js') -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) {
+            foreach ($ln in (Get-Content $idxF.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                $mm = [regex]::Match($ln, '^(\S+)\s+(https?://\S+)')
+                if ($mm.Success) { $fid = [System.IO.Path]::GetFileNameWithoutExtension($mm.Groups[1].Value); if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $mm.Groups[2].Value } }
             }
         }
-        $rank = @{ 'critical' = 0; 'high' = 1; 'medium' = 2; 'low' = 3 }
-        $libs = @{}
         foreach ($d in $rj.data) {
             $fid = [System.IO.Path]::GetFileNameWithoutExtension([string]$d.file)
             $src = if ($idx.ContainsKey($fid)) { $idx[$fid] } else { '' }
@@ -458,15 +450,18 @@ function Build-Report {
                 }
             }
         }
-        if ($libs.Count) {
-            $rSrc = if ($liveRetire) { 'retire.js, live code' } else { 'retire.js, archived code' }
-            W ""; W ("**Vulnerable JS libraries ({1}): {0}** - confirm the live versions:" -f $libs.Count, $rSrc)
-            foreach ($k in ($libs.Keys | Sort-Object @{ Expression = { $s = [string]$libs[$_].sev; if ($rank.ContainsKey($s)) { $rank[$s] } else { 9 } } }, @{ Expression = { $_ } })) {
-                $cv = (@($libs[$k].cves) | Sort-Object | ForEach-Object { '[{0}]({1}{0})' -f $_, $nvd }) -join ', '
-                $sr = if ($libs[$k].src) { '  _' + $libs[$k].src + '_' } else { '' }
-                W ("- ``{0}`` ({1}){2}{3}" -f $k, $(if ($libs[$k].sev) { $libs[$k].sev } else { '?' }), $(if ($cv) { ' - ' + $cv } else { '' }), $sr)
-            }
+    }
+    if ($libs.Count) {
+        W ""; W ("**Vulnerable JS libraries (retire.js, validated on the live JS): {0}** - confirm the vulnerable code path is actually reachable before reporting:" -f $libs.Count)
+        foreach ($k in ($libs.Keys | Sort-Object @{ Expression = { $s = [string]$libs[$_].sev; if ($rank.ContainsKey($s)) { $rank[$s] } else { 9 } } }, @{ Expression = { $_ } })) {
+            $cv = (@($libs[$k].cves) | Sort-Object | ForEach-Object { '[{0}]({1}{0})' -f $_, $nvd }) -join ', '
+            $sr = if ($libs[$k].src) { '  _' + $libs[$k].src + '_' } else { '' }
+            W ("- ``{0}`` ({1}){2}{3}" -f $k, $(if ($libs[$k].sev) { $libs[$k].sev } else { '?' }), $(if ($cv) { ' - ' + $cv } else { '' }), $sr)
         }
+    } elseif ($liveRetire) {
+        W ""; W ("_No vulnerable libraries in the live JS (retire.js)._" + $(if ($arcHits) { " {0} lib(s) matched in archived snapshots - unvalidated (retire can't fingerprint bundled code); spot-check the live bundle by hand -> 06_js\_raw\retirejs.json." -f $arcHits } else { '' }))
+    } else {
+        W ""; W ("_Vulnerable JS libraries: **not validated** - run ``-Probe`` to fetch + retire-scan the live JS._" + $(if ($arcHits) { " ({0} lib(s) seen in archived snapshots; unvalidated, no CVEs asserted -> 06_js\_raw\retirejs.json.)" -f $arcHits } else { '' }))
     }
     W ""
     W "## 3. Origin candidates (behind CDN)"
@@ -649,8 +644,8 @@ function Build-Report {
     HW '</div>'
     HW '</div>'
     HW '<div class="tiles">'
-    HW ('<a class="tile" href="#sec2" title="host / service CVEs (Shodan InternetDB, tied to the IP)"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></a>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<a class="tile" href="#sec2" title="vulnerable JS libraries (retire.js, from {2} front-end code)"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }), $(if ($liveRetire) { 'live-served' } else { 'archived' }))
+    HW ('<a class="tile" href="#sec2" title="host / service CVE leads from Shodan InternetDB - tied to the IP banner, NOT verified on the host"><div class="l">CVE leads</div><div class="n">{0}</div></a>' -f $vulns.Count)
+    HW ('<a class="tile" href="#sec2" title="vulnerable JS libraries retire.js confirmed in the LIVE JS (0 = none in the live code, or no -Probe run)"><div class="l">live vuln libs</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<a class="tile" href="#sec4"><div class="l">endpoints</div><div class="n">{0}</div></a>' -f @($xEnd).Count)
     HW ('<a class="tile" href="#sec5"><div class="l">live secrets</div><div class="n"{1}>{0}</div></a>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<a class="tile" href="OOS_observed.txt" title="open OOS_observed.txt - observed off-host assets, DO NOT TEST"><div class="l">out-of-scope</div><div class="n">{0}</div></a>' -f $oosClean.Count)
@@ -733,13 +728,13 @@ function Build-Report {
         HW '</div>'
     }
     HW '</div>'
-    HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> Known vulnerabilities</h2>'
-    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">Two independent sources: host / service CVEs (Shodan InternetDB, tied to the IP) and vulnerable JS libraries (retire.js, from shipped front-end code). Version-confirm on the live target before reporting.</div>'
-    HW ('<div style="font-size:13px;font-weight:600">Host / service CVEs <span class="muted" style="font-weight:400">&middot; Shodan InternetDB{0}</span></div>' -f $(if ($ipN -gt 1) { " &middot; $ipN IPs scanned" } else { '' }))
+    HW '<div class="card" id="sec2"><h2><span class="sn">2 &middot;</span> Weaknesses to verify</h2>'
+    HW '<div class="muted" style="font-size:12px;margin-bottom:8px">Unverified leads, not confirmed findings. Host / service CVEs come from Shodan InternetDB (tied to the IP banner); JS-library CVEs come ONLY from retire.js on the validated live JS. Confirm each on the live target before reporting.</div>'
+    HW ('<div style="font-size:13px;font-weight:600">Host / service CVE leads <span class="muted" style="font-weight:400">&middot; Shodan InternetDB &middot; unverified (IP banner){0}</span></div>' -f $(if ($ipN -gt 1) { " &middot; $ipN IPs scanned" } else { '' }))
     if (@($vulns).Count) {
         HW '<div class="cve" style="margin:3px 0 2px">'; HW ((@($vulns) | Sort-Object -Unique | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', '); HW '</div>'
     } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none recorded for the host IP(s) - run the in-VDI nmap / version scan to confirm services.</div>' }
-    HW ('<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js &middot; {0} code</span></div>' -f $(if ($liveRetire) { 'live-served' } else { 'archived' }))
+    HW ('<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js &middot; {0}</span></div>' -f $(if ($liveRetire) { 'validated on live JS' } else { 'not validated - run -Probe' }))
     if ($libs.Count) {
         HW ('<div class="bar"><div style="flex:{0};background:var(--dn)"></div><div style="flex:{1};background:var(--wn)"></div><div style="flex:{2};background:var(--faint)"></div></div>' -f $sevHi, $sevMd, $sevLo)
         HW ('<div class="muted" style="font-size:12px;margin-bottom:4px">{0} high &middot; {1} medium &middot; {2} low</div>' -f $sevHi, $sevMd, $sevLo)
@@ -752,11 +747,10 @@ function Build-Report {
             HW ('<div class="row"{0}><div style="min-width:0"><span class="mono" style="font-weight:500">{1}</span>{2}{3}</div><span class="sev" style="{4}">{5}</span></div>' -f $rtop, (HE $lk), $lcve, $lsrc, (SevS $lsev), (HE $lsev))
         }
     } else {
-        # live retire flagged nothing: if the archived pass DID, say so + why (retire can't fingerprint libs bundled into the live app) instead of a bare "none"
-        $arcLibN = 0
-        if ($liveRetire) { $arc = GJson '06_js\retirejs.json'; if ($arc -and $arc.data) { $hs = New-Object System.Collections.Generic.HashSet[string]; foreach ($d in $arc.data) { foreach ($r in $d.results) { [void]$hs.Add((('{0} {1}' -f $r.component, $r.version).Trim())) } }; $arcLibN = $hs.Count } }
-        if ($arcLibN) { HW ('<div class="muted" style="font-size:13px;margin:2px 0">none on the live JS &middot; <b>{0}</b> flagged in archived snapshots but not the current (bundled) code - {1}, then version-check the live bundle by hand.</div>' -f $arcLibN, (FLink '06_js\_raw\retirejs.json' 'see retirejs.json')) }
-        else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none flagged.</div>' }
+        # no live libs to show: -Probe found none, OR it wasn't run. Archived retire is a POINTER only - never rendered as CVEs.
+        $arcTail = if ($arcHits) { ' &middot; ' + (FLink '06_js\_raw\retirejs.json' ([string]$arcHits + ' matched in archived snapshots (unvalidated)')) } else { '' }
+        if ($liveRetire) { HW ('<div class="muted" style="font-size:13px;margin:2px 0">none in the live JS{0} - retire can''t fingerprint libs bundled into the app; spot-check the live bundle by hand.</div>' -f $arcTail) }
+        else { HW ('<div class="muted" style="font-size:13px;margin:2px 0"><b>not validated</b> - run <code>-Probe</code> to fetch + retire-scan the live JS{0}.</div>' -f $arcTail) }
     }
     HW '</div>'
     if (@($smSrc).Count -or @($smRef).Count) {
