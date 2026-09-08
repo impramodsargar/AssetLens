@@ -414,15 +414,28 @@ function Build-Report {
     if ($vulns.Count) { W ("InternetDB flags **{0}** CVE(s) across the exposed IP(s):" -f $vulns.Count); W ""; foreach ($v in ($vulns | Select-Object -First 40)) { W "- $v" } }
     else { W "_None flagged by InternetDB. Still version-check the services from the nmap scan._" }
     if ($cpes.Count) { W ""; W ("**Tech / CPEs:** " + (($cpes | Select-Object -First 20) -join ', ')) }
-    $rj = GJson '06_js\retirejs.json'
+    # prefer the LIVE retire.js pass (libs the current site actually serves) over the archived one; fall back when no -Probe run.
+    $liveRetire = Has '08_live\live_js_retire.json'
+    $rj = if ($liveRetire) { GJson '08_live\live_js_retire.json' } else { GJson '06_js\retirejs.json' }
     if ($rj -and $rj.data) {
-        # map waymore response-file IDs -> original URLs (strip the web.archive.org/<ts>/ wrapper) so each lib cites a real link
+        # map each scanned JS body-file -> its real URL so every flagged lib cites a source link
         $idx = @{}
-        $idxFile = P '06_js\responses\waymore_index.txt'
-        if (Test-Path $idxFile) {
-            foreach ($ln in (Get-Content $idxFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-                $parts = $ln -split ',', 3
-                if ($parts.Count -ge 2) { $fid = $parts[0].Trim(); $u = ($parts[1].Trim()) -replace '^https?://web\.archive\.org/web/\w+/', ''; if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $u } }
+        if ($liveRetire) {
+            # httpx -sr drops an index.txt (<stored-file>  <url>) beside the live JS bodies retire scanned
+            foreach ($idxF in @(Get-ChildItem (P '08_live\js') -Recurse -Filter 'index.txt' -ErrorAction SilentlyContinue)) {
+                foreach ($ln in (Get-Content $idxF.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                    $mm = [regex]::Match($ln, '^(\S+)\s+(https?://\S+)')
+                    if ($mm.Success) { $fid = [System.IO.Path]::GetFileNameWithoutExtension($mm.Groups[1].Value); if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $mm.Groups[2].Value } }
+                }
+            }
+        } else {
+            # map waymore response-file IDs -> original URLs (strip the web.archive.org/<ts>/ wrapper) so each lib cites a real link
+            $idxFile = P '06_js\responses\waymore_index.txt'
+            if (Test-Path $idxFile) {
+                foreach ($ln in (Get-Content $idxFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                    $parts = $ln -split ',', 3
+                    if ($parts.Count -ge 2) { $fid = $parts[0].Trim(); $u = ($parts[1].Trim()) -replace '^https?://web\.archive\.org/web/\w+/', ''; if ($fid -and -not $idx.ContainsKey($fid)) { $idx[$fid] = $u } }
+                }
             }
         }
         $rank = @{ 'critical' = 0; 'high' = 1; 'medium' = 2; 'low' = 3 }
@@ -446,7 +459,8 @@ function Build-Report {
             }
         }
         if ($libs.Count) {
-            W ""; W ("**Vulnerable JS libraries (retire.js): {0}** - confirm the live versions:" -f $libs.Count)
+            $rSrc = if ($liveRetire) { 'retire.js, live code' } else { 'retire.js, archived code' }
+            W ""; W ("**Vulnerable JS libraries ({1}): {0}** - confirm the live versions:" -f $libs.Count, $rSrc)
             foreach ($k in ($libs.Keys | Sort-Object @{ Expression = { $s = [string]$libs[$_].sev; if ($rank.ContainsKey($s)) { $rank[$s] } else { 9 } } }, @{ Expression = { $_ } })) {
                 $cv = (@($libs[$k].cves) | Sort-Object | ForEach-Object { '[{0}]({1}{0})' -f $_, $nvd }) -join ', '
                 $sr = if ($libs[$k].src) { '  _' + $libs[$k].src + '_' } else { '' }
@@ -636,7 +650,7 @@ function Build-Report {
     HW '</div>'
     HW '<div class="tiles">'
     HW ('<a class="tile" href="#sec2" title="host / service CVEs (Shodan InternetDB, tied to the IP)"><div class="l">known CVEs</div><div class="n"{1}>{0}</div></a>' -f $vulns.Count, $(if ($vulns.Count) { ' style="color:var(--dn)"' } else { '' }))
-    HW ('<a class="tile" href="#sec2" title="vulnerable JS libraries (retire.js, from shipped front-end code)"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }))
+    HW ('<a class="tile" href="#sec2" title="vulnerable JS libraries (retire.js, from {2} front-end code)"><div class="l">vuln libraries</div><div class="n"{1}>{0}</div></a>' -f $libs.Count, $(if ($sevHi) { ' style="color:var(--dn)"' } else { '' }), $(if ($liveRetire) { 'live-served' } else { 'archived' }))
     HW ('<a class="tile" href="#sec4"><div class="l">endpoints</div><div class="n">{0}</div></a>' -f @($xEnd).Count)
     HW ('<a class="tile" href="#sec5"><div class="l">live secrets</div><div class="n"{1}>{0}</div></a>' -f $secN, $(if ($secN) { ' style="color:var(--dn)"' } else { '' }))
     HW ('<a class="tile" href="OOS_observed.txt" title="open OOS_observed.txt - observed off-host assets, DO NOT TEST"><div class="l">out-of-scope</div><div class="n">{0}</div></a>' -f $oosClean.Count)
@@ -725,7 +739,7 @@ function Build-Report {
     if (@($vulns).Count) {
         HW '<div class="cve" style="margin:3px 0 2px">'; HW ((@($vulns) | Sort-Object -Unique | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', '); HW '</div>'
     } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none recorded for the host IP(s) - run the in-VDI nmap / version scan to confirm services.</div>' }
-    HW '<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js</span></div>'
+    HW ('<div style="font-size:13px;font-weight:600;margin-top:12px">Vulnerable JS libraries <span class="muted" style="font-weight:400">&middot; retire.js &middot; {0} code</span></div>' -f $(if ($liveRetire) { 'live-served' } else { 'archived' }))
     if ($libs.Count) {
         HW ('<div class="bar"><div style="flex:{0};background:var(--dn)"></div><div style="flex:{1};background:var(--wn)"></div><div style="flex:{2};background:var(--faint)"></div></div>' -f $sevHi, $sevMd, $sevLo)
         HW ('<div class="muted" style="font-size:12px;margin-bottom:4px">{0} high &middot; {1} medium &middot; {2} low</div>' -f $sevHi, $sevMd, $sevLo)
@@ -737,7 +751,13 @@ function Build-Report {
             $lcve = $(if (@($libs[$lk].cves).Count) { '<div class="cve">' + ((@($libs[$lk].cves) | Sort-Object | ForEach-Object { '<a href="' + $nvd + (HE $_) + '" target="_blank" rel="noopener">' + (HE $_) + '</a>' }) -join ', ') + '</div>' } else { '' })
             HW ('<div class="row"{0}><div style="min-width:0"><span class="mono" style="font-weight:500">{1}</span>{2}{3}</div><span class="sev" style="{4}">{5}</span></div>' -f $rtop, (HE $lk), $lcve, $lsrc, (SevS $lsev), (HE $lsev))
         }
-    } else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none flagged.</div>' }
+    } else {
+        # live retire flagged nothing: if the archived pass DID, say so + why (retire can't fingerprint libs bundled into the live app) instead of a bare "none"
+        $arcLibN = 0
+        if ($liveRetire) { $arc = GJson '06_js\retirejs.json'; if ($arc -and $arc.data) { $hs = New-Object System.Collections.Generic.HashSet[string]; foreach ($d in $arc.data) { foreach ($r in $d.results) { [void]$hs.Add((('{0} {1}' -f $r.component, $r.version).Trim())) } }; $arcLibN = $hs.Count } }
+        if ($arcLibN) { HW ('<div class="muted" style="font-size:13px;margin:2px 0">none on the live JS &middot; <b>{0}</b> flagged in archived snapshots but not the current (bundled) code - {1}, then version-check the live bundle by hand.</div>' -f $arcLibN, (FLink '06_js\_raw\retirejs.json' 'see retirejs.json')) }
+        else { HW '<div class="muted" style="font-size:13px;margin:2px 0">none flagged.</div>' }
+    }
     HW '</div>'
     if (@($smSrc).Count -or @($smRef).Count) {
         HW '<div class="card"><h2>Source maps</h2>'
@@ -994,16 +1014,19 @@ function Invoke-Validate {
 }
 
 function Write-ComparerFeed {
-    # Consolidate every discovered/validated in-scope URL into one RDL-Comparer-ready feed (full https URLs, one per
-    # line) for the tool's "Sitemap / Burp Log" slot. Merges OSINT history + archived JS + live JS + live probe;
-    # keeps only in-scope hosts, resolves site-relative paths onto the target, drops data:/js:/mailto: noise.
+    # Build one RDL-Comparer-ready feed (full https URLs, one per line) for the tool's "Sitemap / Burp Log" slot.
+    # After a -Probe run this is the confirmed-live (200) URL set ONLY; a passive run falls back to the discovered
+    # union (archived JS endpoints + OSINT history). Keeps in-scope hosts, resolves site-relative paths, drops data:/js:/mailto:.
     param([string]$Package)
     $h = ((Split-Path $Package -Leaf) -replace '_\d{8}(-\d{6})?$', '').ToLower()
     $hosts = New-Object System.Collections.Generic.HashSet[string]
     [void]$hosts.Add($h)
     if ($h -like 'www.*') { [void]$hosts.Add($h.Substring(4)) } else { [void]$hosts.Add("www.$h") }
     $set = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($rel in @('08_live\live_urls.txt', '08_live\live_js_endpoints.txt', '08_live\well_known_urls.txt', '06_js\endpoints.txt', '05_history\urls_deduped.txt')) {
+    # live_urls.txt only exists after a -Probe run -> use it as the sole (live-confirmed) source; else the passive union.
+    $liveFeed = Join-Path $Package '08_live\live_urls.txt'
+    $rels = if (Test-Path $liveFeed) { @('08_live\live_urls.txt') } else { @('06_js\endpoints.txt', '05_history\urls_deduped.txt') }
+    foreach ($rel in $rels) {
         $p = Join-Path $Package $rel
         if (-not (Test-Path $p)) { continue }
         foreach ($line in (Get-Content $p -Encoding UTF8 -ErrorAction SilentlyContinue)) {
@@ -1022,7 +1045,8 @@ function Write-ComparerFeed {
     $feed = @($set | Sort-Object -Unique)
     # self-contained write (this runs from the -Report dispatch, before the global Save-Lines/$utf8 helpers are defined)
     [System.IO.File]::WriteAllLines((Join-Path $Package 'Comparer_feed.txt'), [string[]]$feed, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host ("Comparer feed: {0} in-scope URL(s) -> Comparer_feed.txt  (load into the RDL Comparer's 'Sitemap / Burp Log' slot)" -f @($feed).Count) -ForegroundColor Cyan
+    $feedKind = if (Test-Path $liveFeed) { 'live' } else { 'discovered' }
+    Write-Host ("Comparer feed: {0} {1} in-scope URL(s) -> Comparer_feed.txt  (load into the RDL Comparer's 'Sitemap / Burp Log' slot)" -f @($feed).Count, $feedKind) -ForegroundColor Cyan
 }
 
 # (Burp-diff mode removed - the external Burp/RDL coverage tool owns that comparison.
@@ -2258,7 +2282,8 @@ function Phase8-Live {
     # the probe (no extra requests) -> CURRENT tech, more accurate than matching regex against archived HTML.
     Invoke-Tool $hx @('-l', $candFile, '-json', '-td', '-o', $jsonl, '-silent', '-no-color', '-duc', '-rl', "$Rate", '-t', '15', '-timeout', '10', '-retries', '1') -TimeoutSec 1200 | Out-Null
     if (-not (Test-Path $jsonl)) { Write-Log 'httpx produced no output -> no live URLs' 'WARN'; return }
-    # keep only "exists" statuses: 2xx/3xx plus auth-gated 401/403. Drop 404/410/dead.
+    # live_urls.txt = confirmed-200 only (the reachable-content set the RDL/Burp coverage compare consumes).
+    # live.jsonl keeps the wider "exists" set (3xx redirects + auth-gated 401/403) and drives tech-detect, without polluting live_urls.
     $liveUrls = New-Object System.Collections.Generic.List[string]
     $rows = New-Object System.Collections.Generic.List[string]
     $liveTech = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -2267,7 +2292,9 @@ function Phase8-Live {
         try { $j = $ln | ConvertFrom-Json } catch { continue }
         $sc = [int]$j.status_code
         if (-not (($sc -ge 200 -and $sc -lt 400) -or $sc -eq 401 -or $sc -eq 403)) { continue }
-        if ($j.url) { $liveUrls.Add([string]$j.url); $rows.Add($ln); foreach ($tt in @($j.tech)) { if ($tt) { [void]$liveTech.Add([string]$tt) } } }
+        if (-not $j.url) { continue }
+        $rows.Add($ln); foreach ($tt in @($j.tech)) { if ($tt) { [void]$liveTech.Add([string]$tt) } }
+        if ($sc -eq 200) { $liveUrls.Add([string]$j.url) }   # only 200 OK reaches live_urls.txt
     }
     # CURRENT tech (kept separate from the archived fingerprint so the report can show live-vs-historical)
     if ($liveTech.Count) { Save-Lines (Join-Path $pkg '08_tech\fingerprint_live.txt') (@($liveTech) | Sort-Object); Write-Log ('live tech (httpx -td): {0} detected -> 08_tech\fingerprint_live.txt' -f $liveTech.Count) 'OK' }
@@ -2277,7 +2304,7 @@ function Phase8-Live {
     Save-Lines (Join-Path $liveDir 'live_urls.txt') $liveSorted
     Save-Lines (Join-Path $liveDir 'live_uris.txt') (@($liveUris) | Sort-Object -Unique)
     Save-Lines (Join-Path $liveDir 'live.jsonl') $rows
-    Write-Log ("liveness: {0} probed -> {1} live (2xx/3xx/401/403) -> 08_live\live_urls.txt" -f $cands.Count, $liveSorted.Count) 'OK'
+    Write-Log ("liveness: {0} probed -> {1} live 200 -> 08_live\live_urls.txt ({2} reachable incl 3xx/401/403 -> live.jsonl)" -f $cands.Count, $liveSorted.Count, $rows.Count) 'OK'
     Get-WellKnown $pkg
 }
 
