@@ -1850,6 +1850,29 @@ function Phase5-History {
     Write-Log ('urls {0} | params {1} | js {2} | ext-types {3}' -f $all.Count, $params.Count, $js.Count, $extMap.Count) 'OK'
 }
 
+function Get-SafeWappaPat {
+    # Wappalyzer patterns are matched UNANCHORED against a big body-text corpus (the ruleset was flattened, losing the
+    # per-field context real Wappalyzer uses). A pattern whose MANDATORY match is a short bare word - e.g. Divi's
+    # "divi(?:\sv\.([\d.]+))?" reduces to "divi" - then false-positives INSIDE ordinary words ("indiVIDUAl",
+    # "diVIDEnd"). For those, require word boundaries so the token only matches standalone. Specific patterns
+    # (anything with a delimiter, or a longer/compound mandatory core) pass through unchanged. Presence-only match,
+    # so dropping the optional version tail is fine.
+    param([string]$p)
+    # ^...$ anchors match only the whole-corpus start/end (matcher runs WITHOUT Multiline), so an anchored pattern like
+    # "^element$" or "^yes$" can never match mid-text - it's already FP-safe. Leave it; stripping the anchors would turn
+    # a dead-safe pattern into "\belement\b" that matches the ordinary word "element" everywhere.
+    if ($p.StartsWith('^') -or $p.EndsWith('$')) { return $p }
+    $s = $p
+    $prev = $null
+    while ($prev -ne $s) {
+        $prev = $s
+        $s = [regex]::Replace($s, '(?:\(\?:(?:[^()]|\([^()]*\))*\)|\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])\?$', '')   # peel a trailing OPTIONAL group/class (one nesting level)
+        if ($s -match '[A-Za-z0-9]\?$') { $s = $s.Substring(0, $s.Length - 2) }        # peel a trailing optional single char
+    }
+    if ($s -match '^[A-Za-z][A-Za-z0-9]{1,6}$') { return ('\b' + $s + '\b') }
+    return $p
+}
+
 function Phase6-Js {
     Write-Log 'P6  archived responses + extraction (waymore -> native regex)'
     $jsDir = Join-Path $pkg '06_js'
@@ -2014,7 +2037,8 @@ function Phase6-Js {
             Write-Log ('Wappalyzer fingerprint: matching {0}-tech ruleset vs {1:N0} KB body corpus...' -f @($wappa).Count, ($corpusStr.Length / 1KB)) 'INFO'
             foreach ($t in $wappa) {
                 foreach ($pat in $t.p) {
-                    $ok = $false; try { $ok = [regex]::IsMatch($corpusStr, [string]$pat, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromSeconds(2)) } catch {}
+                    $rx = Get-SafeWappaPat ([string]$pat)   # word-bound the bare-word patterns so they can't match inside ordinary words
+                    $ok = $false; try { $ok = [regex]::IsMatch($corpusStr, $rx, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromSeconds(2)) } catch {}
                     if ($ok) { $wHits[[string]$t.n] = (@($t.c) -join ', '); break }
                 }
             }
